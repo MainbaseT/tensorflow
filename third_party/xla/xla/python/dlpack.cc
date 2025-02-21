@@ -22,20 +22,22 @@ limitations under the License.
 #include <memory>
 #include <numeric>
 #include <optional>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
 #include "absl/types/span.h"
-#include "include/dlpack/dlpack.h"  // from @dlpack
+#include "include/dlpack/dlpack.h"
 #include "llvm/Support/Casting.h"
-#include "third_party/nanobind/include/nanobind/nanobind.h"
+#include "nanobind/nanobind.h"
+#include "nanobind/ndarray.h"
 #include "xla/layout.h"
 #include "xla/pjrt/exceptions.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
@@ -52,10 +54,10 @@ limitations under the License.
 #include "xla/python/util.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/logging.h"
-#include "tsl/platform/statusor.h"
 
 namespace nb = nanobind;
 
@@ -256,7 +258,7 @@ absl::StatusOr<DLDeviceType> DLDeviceTypeForDevice(const PjRtDevice& device) {
 absl::StatusOr<DLDevice> DLDeviceForDevice(const PjRtDevice& device) {
   DLDevice context;
   TF_ASSIGN_OR_RETURN(context.device_type, DLDeviceTypeForDevice(device));
-  context.device_id = device.local_hardware_id();
+  context.device_id = device.local_hardware_id().value();
   return context;
 }
 
@@ -270,25 +272,96 @@ absl::StatusOr<PjRtDevice*> DeviceForDLDevice(const PjRtClient* cpu_client,
             "DLPack tensor is on CPU, but no CPU backend was provided.");
       }
       TF_RET_CHECK(cpu_client->platform_id() == CpuId());
-      return cpu_client->LookupAddressableDevice(context.device_id);
+      return cpu_client->LookupAddressableDevice(
+          xla::PjRtLocalDeviceId(context.device_id));
     case kDLCUDA:
       if (gpu_client == nullptr) {
         return InvalidArgument(
             "DLPack tensor is on GPU, but no GPU backend was provided.");
       }
       TF_RET_CHECK(gpu_client->platform_id() == CudaId());
-      return gpu_client->LookupAddressableDevice(context.device_id);
+      return gpu_client->LookupAddressableDevice(
+          xla::PjRtLocalDeviceId(context.device_id));
     case kDLROCM:
       if (gpu_client == nullptr) {
         return InvalidArgument(
             "DLPack tensor is on GPU, but no GPU backend was provided.");
       }
       TF_RET_CHECK(gpu_client->platform_id() == RocmId());
-      return gpu_client->LookupAddressableDevice(context.device_id);
+      return gpu_client->LookupAddressableDevice(
+          xla::PjRtLocalDeviceId(context.device_id));
     default:
       return InvalidArgument("Unknown/unsupported DLPack device type %d",
                              context.device_type);
   }
+}
+
+absl::Status VerifyDType(const DLTensor& dl_tensor) {
+  if (dl_tensor.dtype.bits % 8 != 0) {
+    return InvalidArgument(
+        "Unsupported DLPack tensor dtype: bits should be a multiple of 8, got "
+        "%d",
+        dl_tensor.dtype.bits);
+  }
+
+  if (dl_tensor.dtype.lanes != 1) {
+    return InvalidArgument(
+        "Unsupported DLPack tensor dtype: lanes should be equal to 1, got %d",
+        dl_tensor.dtype.lanes);
+  }
+
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::vector<int64_t>> GetByteStrides(const DLTensor& dl_tensor) {
+  TF_RETURN_IF_ERROR(VerifyDType(dl_tensor));
+
+  // Convert element strides from the number of elements to the number of bytes.
+  std::vector<int64_t> strides;
+  strides.reserve(dl_tensor.ndim);
+  for (int i = 0; i < dl_tensor.ndim; ++i) {
+    strides.push_back(dl_tensor.strides[i] * dl_tensor.dtype.bits / 8);
+  }
+  return strides;
+}
+
+absl::StatusOr<std::unique_ptr<PjRtBuffer>> MakePjrtBuffer(
+    PjRtDevice& device, ::DLManagedTensor* dlmt, const Shape& shape,
+    PrimitiveType element_type, absl::Span<int64_t const> dimensions,
+    std::optional<std::intptr_t> stream = std::nullopt) {
+  std::function<void()> on_delete_callback;
+  if (dlmt->deleter) {
+    on_delete_callback = [dlmt]() { dlmt->deleter(dlmt); };
+  }
+
+  // First try to create a view.
+  void* data =
+      static_cast<char*>(dlmt->dl_tensor.data) + dlmt->dl_tensor.byte_offset;
+  auto result = device.client()->CreateViewOfDeviceBuffer(
+      data, shape, *device.default_memory_space(), on_delete_callback, stream);
+
+  // If that fails with invalid argument, it's possibly because of the incorrect
+  // alignment. If we're on CPU, we can create a copy of buffer.
+  if (result.status().code() == absl::StatusCode::kInvalidArgument &&
+      dlmt->dl_tensor.device.device_type == kDLCPU) {
+    LOG(WARNING) << "DLPack buffer is not aligned (data at: " << data
+                 << "). Creating a copy.";
+
+    // Convert tensor strides (expressed in number of elements) to byte strides.
+    std::optional<std::vector<int64_t>> byte_strides;
+    if (dlmt->dl_tensor.strides) {
+      TF_ASSIGN_OR_RETURN(byte_strides, GetByteStrides(dlmt->dl_tensor));
+    }
+
+    TF_ASSIGN_OR_RETURN(auto* memory_space, device.default_memory_space());
+
+    // Create a copy.
+    result = device.client()->BufferFromHostBuffer(
+        data, element_type, dimensions, byte_strides,
+        PjRtClient::HostBufferSemantics::kMutableZeroCopy, on_delete_callback,
+        memory_space, /*device_layout=*/nullptr);
+  }
+  return result;
 }
 
 }  // namespace
@@ -338,7 +411,7 @@ absl::StatusOr<nb::capsule> BufferToDLPackManagedTensor(
   pack->tensor.manager_ctx = pack.get();
   pack->tensor.deleter = DLPackTensorDeleter;
   TF_ASSIGN_OR_RETURN(dt.device, DLDeviceForDevice(*pjrt_buffer->device()));
-  dt.device.device_id = pjrt_buffer->device()->local_hardware_id();
+  dt.device.device_id = pjrt_buffer->device()->local_hardware_id().value();
   dt.ndim = pjrt_buffer->dimensions().size();
   TF_ASSIGN_OR_RETURN(dt.dtype,
                       PrimitiveTypeToDLDataType(pjrt_buffer->element_type()));
@@ -347,7 +420,7 @@ absl::StatusOr<nb::capsule> BufferToDLPackManagedTensor(
                                      pjrt_buffer->dimensions().end());
 
   // TODO(b/327524065): use PjRtLayout directly instead of xla::Layout
-  Layout xla_layout = GetXlaLayoutUnsafe(pjrt_buffer->layout());
+  Layout xla_layout = pjrt_buffer->layout()->xla_layout();
   pack->strides = StridesForShape(pjrt_buffer->element_type(),
                                   pjrt_buffer->dimensions(), xla_layout);
 
@@ -386,11 +459,11 @@ absl::StatusOr<nb::object> DLPackManagedTensorToBuffer(
   auto* cpu_pjrt_client = cpu_client ? (*cpu_client)->pjrt_client() : nullptr;
   auto* gpu_pjrt_client = gpu_client ? (*gpu_client)->pjrt_client() : nullptr;
 
-  if (std::string_view(tensor.name()) != kDlTensorCapsuleName) {
+  if (absl::string_view(tensor.name()) != kDlTensorCapsuleName) {
     return InvalidArgument(
         "DLPack tensor must be a capsule with name \"dltensor\", got \"%s\". "
         "Note that a DLPack tensor may be consumed at most once.",
-        std::string_view(tensor.name()));
+        absl::string_view(tensor.name()));
   }
   DLManagedTensor* dlmt = static_cast<DLManagedTensor*>(tensor.data());
   if (dlmt->dl_tensor.ndim < 0) {
@@ -440,11 +513,11 @@ absl::StatusOr<nb::object> DLPackManagedTensorToBuffer(
   if (dlmt->deleter) {
     on_delete_callback = [dlmt]() { dlmt->deleter(dlmt); };
   }
-  TF_ASSIGN_OR_RETURN(auto pjrt_buffer,
-                      device->client()->CreateViewOfDeviceBuffer(
-                          static_cast<char*>(dlmt->dl_tensor.data) +
-                              dlmt->dl_tensor.byte_offset,
-                          shape, device, on_delete_callback));
+
+  TF_ASSIGN_OR_RETURN(
+      auto pjrt_buffer,
+      MakePjrtBuffer(*device, dlmt, shape, element_type, dimensions));
+
   // We have taken ownership of the array inside the capsule; make sure the
   // capsule it cannot be used again.
   PyCapsule_SetName(tensor.ptr(), "used_dltensor");
@@ -480,11 +553,11 @@ absl::StatusOr<nb::object> DLPackManagedTensorToBuffer(
         "DLPack is only supported for devices addressable by the current "
         "process.");
   }
-  if (std::string_view(tensor.name()) != kDlTensorCapsuleName) {
+  if (absl::string_view(tensor.name()) != kDlTensorCapsuleName) {
     return InvalidArgument(
         "DLPack tensor must be a capsule with name \"dltensor\", got \"%s\". "
         "Note that a DLPack tensor may be consumed at most once.",
-        std::string_view(tensor.name()));
+        absl::string_view(tensor.name()));
   }
   DLManagedTensor* dlmt = static_cast<DLManagedTensor*>(tensor.data());
   if (dlmt->dl_tensor.ndim < 0) {
@@ -511,16 +584,10 @@ absl::StatusOr<nb::object> DLPackManagedTensorToBuffer(
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(element_type, dimensions,
                                                     minor_to_major);
 
-  std::function<void()> on_delete_callback;
-  if (dlmt->deleter) {
-    on_delete_callback = [dlmt]() { dlmt->deleter(dlmt); };
-  }
-  TF_ASSIGN_OR_RETURN(
-      auto pjrt_buffer,
-      device->pjrt_device()->client()->CreateViewOfDeviceBuffer(
-          static_cast<char*>(dlmt->dl_tensor.data) +
-              dlmt->dl_tensor.byte_offset,
-          shape, device->pjrt_device(), on_delete_callback, stream));
+  TF_ASSIGN_OR_RETURN(auto pjrt_buffer,
+                      MakePjrtBuffer(*device->pjrt_device(), dlmt, shape,
+                                     element_type, dimensions, stream));
+
   // We have taken ownership of the array inside the capsule; make sure the
   // capsule it cannot be used again.
   PyCapsule_SetName(tensor.ptr(), "used_dltensor");
@@ -536,6 +603,18 @@ absl::StatusOr<nb::object> DLPackManagedTensorToBuffer(
                       ifrt_client->CreatePjRtArray(std::move(pjrt_buffer)));
   return PyArray::MakeFromSingleDeviceArray(std::move(client), Traceback::Get(),
                                             std::move(ifrt_array), false, true);
+}
+
+absl::StatusOr<nanobind::dlpack::dtype> PrimitiveTypeToNbDLDataType(
+    PrimitiveType type) {
+  TF_ASSIGN_OR_RETURN(DLDataType dl_type, PrimitiveTypeToDLDataType(type));
+
+  nanobind::dlpack::dtype nb_type;
+  nb_type.lanes = dl_type.lanes;
+  nb_type.bits = dl_type.bits;
+  nb_type.code = dl_type.code;
+
+  return nb_type;
 }
 
 }  // namespace xla

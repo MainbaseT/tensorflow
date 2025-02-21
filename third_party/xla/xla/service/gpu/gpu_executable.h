@@ -31,20 +31,18 @@ limitations under the License.
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "xla/backends/gpu/runtime/annotation.h"
+#include "xla/backends/gpu/runtime/sequential_thunk.h"
+#include "xla/backends/gpu/runtime/thunk.h"
 #include "xla/hlo/ir/hlo_input_output_alias_config.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/executable.h"
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/gpu/runtime/annotation.h"
-#include "xla/service/gpu/runtime/thunk.h"
-#include "xla/service/hlo_execution_profile.h"
-#include "xla/service/hlo_module_config.h"
 #include "xla/service/service_executable_run_options.h"
 #include "xla/service/shaped_buffer.h"
+#include "xla/service/xla_debug_info_manager.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/device_description.h"
@@ -63,8 +61,6 @@ namespace gpu {
 // This is an immutable data type after initialization, and thus thread safe.
 class GpuExecutable : public Executable {
  public:
-  using OwnedThunkSequence = std::unique_ptr<const ThunkSequence>;
-
   struct ConstantInfo {
     std::string symbol_name;
     DenseDataIntermediate content;
@@ -86,9 +82,9 @@ class GpuExecutable : public Executable {
   struct Params {
     std::string asm_text;
     std::vector<uint8_t> binary;
-    Thunk::BinaryMap dnn_compiled_graphs;
+    BinaryMap dnn_compiled_graphs;
     se::GpuComputeCapability gpu_version;
-    OwnedThunkSequence executable;
+    std::unique_ptr<SequentialThunk> executable;
     std::vector<ConstantInfo> constants;
     absl::flat_hash_map<ShapeIndex, OutputInfo> output_info;
     std::string module_name;
@@ -107,6 +103,14 @@ class GpuExecutable : public Executable {
 
   // This should be called after set_ir_module_string.
   const std::string& ir_module_string() const { return ir_module_string_; }
+
+  const std::string& module_name() const { return module_name_; }
+
+  const xla::Shape& output_shape() const { return output_shape_; }
+
+  const absl::flat_hash_map<ShapeIndex, OutputInfo>& output_info() const {
+    return output_info_;
+  }
 
   // This should be called before ExecuteOnStream.
   void set_ir_module_string(const std::string& ir_module_string) {
@@ -129,21 +133,17 @@ class GpuExecutable : public Executable {
   // compiled.
   const std::vector<uint8_t>& binary() const { return binary_; }
 
-  const Thunk::BinaryMap& dnn_compiled_graphs() const {
-    return dnn_compiled_graphs_;
-  }
+  const BinaryMap& dnn_compiled_graphs() const { return dnn_compiled_graphs_; }
 
   // ExecuteAsyncOnStream will fail if the compute capability of the stream
   // doesn't match the compute capability passed to this object's constructor.
   absl::StatusOr<ExecutionOutput> ExecuteAsyncOnStream(
       const ServiceExecutableRunOptions* run_options,
-      std::vector<ExecutionInput> arguments,
-      HloExecutionProfile* hlo_execution_profile) override;
+      std::vector<ExecutionInput> arguments) override;
 
   absl::StatusOr<ScopedShapedBuffer> ExecuteAsyncOnStream(
       const ServiceExecutableRunOptions* run_options,
-      absl::Span<const ShapedBuffer* const> arguments,
-      HloExecutionProfile* hlo_execution_profile) override;
+      absl::Span<const ShapedBuffer* const> arguments) override;
 
   using VariantArguments = std::variant<absl::Span<const ShapedBuffer* const>,
                                         absl::Span<ExecutionInput>>;
@@ -173,18 +173,10 @@ class GpuExecutable : public Executable {
     return buffer_assignment_.get();
   }
 
- private:
-  // Use GpuExecutable::Create() to create an instance.
-  explicit GpuExecutable(Params params);
+  const SequentialThunk& GetThunk() { return *thunks_; }
 
-  // If `block_host_until_done` is false, execution will not block the host
-  // until the kernels have completed. This is used as an optimization for
-  // clients, such as Tensorflow, that use a single stream of execution for
-  // computations, and allow host-side deallocation from the allocator before
-  // GPU execution completes.
-  absl::Status ExecuteThunksOrXlaRuntime(
-      const ServiceExecutableRunOptions* run_options,
-      const BufferAllocations& buffer_allocations, bool block_host_until_done);
+  absl::Status ExecuteThunks(const BufferAllocations& buffer_allocations,
+                             const ServiceExecutableRunOptions* run_options);
 
   using BufferAllocToDeviceMemoryMap =
       absl::flat_hash_map<BufferAllocation::Index, se::DeviceMemoryBase>;
@@ -201,6 +193,12 @@ class GpuExecutable : public Executable {
   // instead.
   absl::StatusOr<const BufferAllocToDeviceMemoryMap*> ResolveConstantGlobals(
       stream_executor::Stream* stream);
+
+  absl::Status VerboseAllocationError(absl::Status s);
+
+ private:
+  // Use GpuExecutable::Create() to create an instance.
+  explicit GpuExecutable(Params params);
 
   // GpuExecutable check with either AMD's ISA version, or Nvidia's major minor
   // version for compute capability, depending on the hardware.
@@ -236,14 +234,14 @@ class GpuExecutable : public Executable {
   // May be empty, in which case we leave compilation up to the GPU driver.
   std::vector<uint8_t> binary_;
 
-  Thunk::BinaryMap dnn_compiled_graphs_;
+  BinaryMap dnn_compiled_graphs_;
 
   // The GPU version for compute compatibility check.
   se::GpuComputeCapability gpu_version_;
 
   // The thunks to be invoked by this GpuExecutable. They are generated by the
   // IrEmitter (null if XLA:GPU runtime is enabled).
-  OwnedThunkSequence thunks_;
+  std::unique_ptr<SequentialThunk> thunks_;
 
   // Additional execution streams requested by `thunks_`.
   absl::flat_hash_set<ExecutionStreamId> execution_stream_ids_;

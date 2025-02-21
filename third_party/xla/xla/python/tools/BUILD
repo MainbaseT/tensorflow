@@ -34,7 +34,6 @@ pytype_strict_library(
     name = "types",
     srcs = ["types.py"],
     # copybara:uncomment pytype_srcs = ["_types.pyi"],
-    srcs_version = "PY3",
     # Cannot build this on OSS because the ":xla_data_proto_py_pb2"
     # dependency isn't part of the public API.
     tags = ["no_oss"],
@@ -42,13 +41,13 @@ pytype_strict_library(
     deps = [
         ":_types",  # buildcleaner: keep
         "//third_party/py/numpy",
-        "//xla:xla_data_proto_py_pb2",
-        "@ml_dtypes",
+        "//xla:xla_data_proto_py",
+        "@ml_dtypes_py//ml_dtypes",
     ],
 )
 
 # NOTE: Copybara detects the `tsl_pybind_extension` rule and automatically
-# injects the "@com_google_protobuf//:protobuf_python" python dependency
+# injects the @com_google_protobuf//:protobuf_python python dependency
 # required by "@pybind11_protobuf//pybind11_protobuf:native_proto_caster".
 tsl_pybind_extension(
     name = "_types",
@@ -58,7 +57,6 @@ tsl_pybind_extension(
     # Users should depend on ":types" instead.
     visibility = ["//visibility:private"],
     deps = [
-        "//third_party/nanobind",
         "//xla:literal",
         "//xla:xla_data_proto_cc",
         "//xla/pjrt:status_casters",
@@ -67,6 +65,7 @@ tsl_pybind_extension(
         "//xla/python:types",
         "//xla/tsl/python/lib/core:numpy",
         "@com_google_absl//absl/strings",
+        "@nanobind",
         "@pybind11",
         "@pybind11_abseil//pybind11_abseil:import_status_module",
         "@pybind11_protobuf//pybind11_protobuf:native_proto_caster",
@@ -77,17 +76,15 @@ py_strict_test(
     name = "types_test",
     size = "small",
     srcs = ["types_test.py"],
-    python_version = "PY3",
-    srcs_version = "PY3",
     # Cannot build this on OSS because the ":xla_data_proto_py_pb2"
     # dependency isn't part of the public API.
     tags = ["no_oss"],
     deps = [
         ":types",
-        #internal proto upb dep
-        "//third_party/py/numpy",
-        "//xla:xla_data_proto_py_pb2",
         "@absl_py//absl/testing:absltest",
         "@absl_py//absl/testing:parameterized",
+        # copybara:uncomment "//third_party/py/google/protobuf:use_fast_cpp_protos",
+        "//third_party/py/numpy",
+        "//xla:xla_data_proto_py",
     ],
 )

@@ -30,7 +30,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
-#include "third_party/nanobind/include/nanobind/nanobind.h"
+#include "nanobind/nanobind.h"
 #include "xla/layout_util.h"
 #include "xla/pjrt/host_callback.h"
 #include "xla/pjrt/pjrt_compiler.h"
@@ -46,9 +46,9 @@ limitations under the License.
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/tsl/concurrency/ref_count.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/statusor.h"
 
 namespace nb = nanobind;
 
@@ -127,7 +127,7 @@ PyCpuLoadedHostCallback::Create(ifrt::Client* ifrt_client,
                                 absl::Span<const Shape> result_shapes) {
   ifrt::PlatformId platform_id = ifrt_client->platform_id();
   if (platform_id != CpuId() && platform_id != CudaId() &&
-      platform_id != RocmId()) {
+      platform_id != RocmId() && platform_id != SyclId()) {
     return Unimplemented("CpuCallback supports CPU and GPU only");
   }
 

@@ -1,5 +1,6 @@
+load("//xla/tsl:tsl.bzl", "if_google")
 load(
-    "@local_tsl//tsl/platform:rules_cc.bzl",
+    "//xla/tsl/platform:rules_cc.bzl",
     "cc_library",
 )
 
@@ -16,6 +17,5 @@ cc_library(
     hdrs = ["proto_utils.h"],
     deps = [
         "@com_google_absl//absl/time",
-        "@com_google_protobuf//:protobuf_headers",
-    ],
+    ] + if_google(["@com_google_protobuf//:duration_cc_proto"]),
 )

@@ -28,8 +28,8 @@ limitations under the License.
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
+#include "tensorflow/compiler/mlir/lite/tools/optimize/reduced_precision_metadata.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/lite/tools/optimize/reduced_precision_support.h"
 
 namespace mlir {
 namespace quant {
@@ -215,6 +215,10 @@ struct QuantizationSpecs {
   // If other than kQDQNone, the model is a floating point graph with QDQ ops
   // to be eliminated and fused into quantized kernels.
   QDQConversionMode qdq_conversion_mode = QDQConversionMode::kQDQNone;
+
+  // When set, adheres to the QDQ annotations added by the framework when
+  // possible rather than quantizing any op that is possible to quantize.
+  bool strict_qdq_mode = false;
 };
 
 // Parses the command line flag strings to the CustomOpMap specification.

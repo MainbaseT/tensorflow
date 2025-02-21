@@ -25,25 +25,29 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
-#include "absl/log/check.h"
-#include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "llvm/ADT/STLExtras.h"
-#include "mlir/IR/AffineExpr.h"  // from @llvm-project
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/Support/LLVM.h"  // from @llvm-project
+#include "llvm/Support/MathExtras.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Support/LLVM.h"
+#include "xla/backends/gpu/codegen/fusion_emitter.h"
+#include "xla/hlo/analysis/indexing_analysis.h"
+#include "xla/hlo/analysis/indexing_map.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/layout.h"
-#include "xla/service/gpu/fusions/fusion_emitter.h"
 #include "xla/service/gpu/gpu_fusible.h"
 #include "xla/service/gpu/hlo_fusion_analysis.h"
-#include "xla/service/gpu/hlo_traversal.h"
-#include "xla/service/gpu/model/indexing_analysis.h"
-#include "xla/service/gpu/model/indexing_map.h"
+#include "xla/service/gpu/model/affine_map_evaluator.h"
+#include "xla/service/gpu/model/tiled_hlo_instruction.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/stream_executor/device_description.h"
+#include "xla/util.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace gpu {
@@ -52,6 +56,7 @@ namespace gpu {
 // producer and consumer are considered as one fusion, otherwise it's only the
 // producer.
 bool IsReadCoalescedHeuristic(HloFusionAnalysis::EmitterFusionKind fusion_kind,
+                              const se::DeviceDescription& device_info,
                               const HloInstruction* producer,
                               const HloInstruction* consumer) {
   // Transposing minor dimension breaks coalescing.
@@ -89,22 +94,101 @@ bool IsReadCoalescedHeuristic(HloFusionAnalysis::EmitterFusionKind fusion_kind,
   }
   // Fusing two row reductions breaks coalescing.
   if (fusion_kind == HloFusionAnalysis::EmitterFusionKind::kReduction &&
-      IsInputFusibleReduction(*producer) && consumer &&
-      IsInputFusibleReduction(*consumer)) {
+      IsInputFusibleReduction(*producer, device_info) && consumer &&
+      IsInputFusibleReduction(*consumer, device_info)) {
     return false;
   }
   return true;
+}
+
+double BandwidthUtilizationRateHeuristicForTiledMemoryAccess(
+    const TiledHloInstruction& hbm_access_instr,
+    const se::DeviceDescription& device_info) {
+  const HloInstruction* hlo = hbm_access_instr.hlo();
+  const Shape& shape = hlo->shape();
+
+  // Compute the number of elements in the contiguous part of the tile.
+  int64_t contiguous_elements = 1;
+  for (const auto dim_idx : shape.layout().minor_to_major()) {
+    // This dimension is strided, so it's not contiguous.
+    if (hbm_access_instr.tile_stride(dim_idx) != 1) {
+      break;
+    }
+
+    int64_t tile_size = hbm_access_instr.tile_size(dim_idx);
+    int64_t dim_size = shape.dimensions(dim_idx);
+
+    // Make sure to ignore the mask if there is one.
+    contiguous_elements *= std::min(tile_size, dim_size);
+
+    // This dimension is only partially captured, so more major dimensions are
+    // necessarily not captured contiguously.
+    if (tile_size < dim_size) {
+      break;
+    }
+  }
+
+  // Compute the size of the contiguous part of the tile in bytes.
+  int64_t contiguous_bytes_accessed =
+      contiguous_elements *
+      ShapeUtil::ByteSizeOfPrimitiveType(hlo->shape().element_type());
+
+  // Memory accesses are fully coalesced if the memory access uses exactly a
+  // multiple of the DRAM->L2 cache line size contiguously.
+  int64_t transaction_size_bytes =
+      device_info.dram_to_l2_transaction_size_bytes();
+  int64_t effective_bytes_accessed =
+      transaction_size_bytes *
+      CeilOfRatio(contiguous_bytes_accessed, transaction_size_bytes);
+  return 1.0 * contiguous_bytes_accessed / effective_bytes_accessed;
+}
+
+bool IsTiledReadCoalescedHeuristic(const TiledHloInstruction& operand,
+                                   const se::DeviceDescription& device_info) {
+  const Shape& shape = operand.hlo()->shape();
+
+  // Compute the number of elements in the contiguous part of the tile.
+  int64_t contiguous_read_elements = 1;
+  for (const auto dim_idx : shape.layout().minor_to_major()) {
+    // This dimension is strided, so it's not contiguous.
+    if (operand.tile_stride(dim_idx) != 1) {
+      break;
+    }
+
+    int64_t tile_size = operand.tile_size(dim_idx);
+    int64_t dim_size = shape.dimensions(dim_idx);
+
+    // Make sure to ignore the mask if there is one.
+    contiguous_read_elements *= std::min(tile_size, dim_size);
+
+    // This dimension is only partially captured, so more major dimensions are
+    // necessarily not captured contiguously.
+    if (tile_size < dim_size) {
+      break;
+    }
+  }
+
+  // Compute the size of the contiguous part of the tile in bytes.
+  int64_t contiguous_bytes_accessed =
+      contiguous_read_elements *
+      ShapeUtil::ByteSizeOfPrimitiveType(operand.hlo()->shape().element_type());
+
+  // We consider a read coalesced if the contiguous part of the read covers the
+  // whole DRAM->L2 cache line.
+  //
+  // TODO(b/332714755): note that we don't check that we fully exploit all the
+  // cache lines we read from if we happen to read through several of them.
+  return contiguous_bytes_accessed >=
+         device_info.dram_to_l2_transaction_size_bytes();
 }
 
 namespace {
 
 using ::mlir::AffineBinaryOpExpr;
 using ::mlir::AffineConstantExpr;
-using ::mlir::AffineDimExpr;
 using ::mlir::AffineExpr;
 using ::mlir::AffineExprKind;
 using ::mlir::AffineMap;
-using ::mlir::AffineSymbolExpr;
 using ::mlir::getAffineConstantExpr;
 using ::mlir::MLIRContext;
 
@@ -120,15 +204,15 @@ bool EstimateCoalescingViaMemoryTransactionsCount(
   int total_num_elements = 0;
   for (const auto& range : intervals) {
     int64_t num_elements = range.upper - range.lower + 1;
-    memory_transactions +=
-        CeilDiv(num_elements * type_size, kBytesPerMemoryTransaction);
+    memory_transactions += llvm::divideCeilSigned(num_elements * type_size,
+                                                  kBytesPerMemoryTransaction);
     total_num_elements += num_elements;
   }
   if (memory_transactions == 0) {
     return true;
   }
-  int memory_transactions_lower_bound =
-      CeilDiv(total_num_elements * type_size, kBytesPerMemoryTransaction);
+  int memory_transactions_lower_bound = llvm::divideCeilSigned(
+      total_num_elements * type_size, kBytesPerMemoryTransaction);
   // The magic value chosen by an uneducated guess.
   constexpr float kIsCoalescedThreshold = 0.9;
   return memory_transactions_lower_bound >
@@ -232,11 +316,10 @@ void AssignValuesToRTVars(IndexingMap* indexing_map) {
     symbol_replacements.push_back(
         mlir::getAffineSymbolExpr(symbol_id, mlir_context));
   }
-  for (const RTVar& rt_var : indexing_map->GetRTVars()) {
+  for (const IndexingMap::Variable& rt_var : indexing_map->GetRTVars()) {
     // Take midpoint of the feasible interval for the RT variable.
     symbol_replacements.push_back(getAffineConstantExpr(
-        (rt_var.feasible_values.lower + rt_var.feasible_values.upper) / 2,
-        mlir_context));
+        (rt_var.bounds.lower + rt_var.bounds.upper) / 2, mlir_context));
   }
   AffineMap thread_x_to_input_no_dim_symbols =
       indexing_map->GetAffineMap().replaceDimsAndSymbols(
@@ -262,7 +345,7 @@ void AssignValuesToOuterLoopIVs(IndexingMap* indexing_map) {
   for (int64_t symbol_id = 0; symbol_id < indexing_map->GetRangeVarsCount() - 1;
        ++symbol_id) {
     symbol_replacements.push_back(getAffineConstantExpr(
-        indexing_map->GetRangeVar(symbol_id).range.lower, mlir_context));
+        indexing_map->GetRangeVar(symbol_id).bounds.lower, mlir_context));
   }
   symbol_replacements.push_back(mlir::getAffineSymbolExpr(0, mlir_context));
 
@@ -319,39 +402,6 @@ std::optional<PartitionedExpr> Partition(AffineExpr expr) {
     }
   }
   return result;
-}
-
-// Given an AffineExpr and the values for its dimensions and symbols, evaluates
-// the result.
-int64_t EvaluateAffineExpr(AffineExpr expr,
-                           const std::vector<int64_t>& dim_values,
-                           const std::vector<int64_t>& symbol_values = {}) {
-  if (auto const_expr = mlir::dyn_cast<AffineConstantExpr>(expr)) {
-    return const_expr.getValue();
-  }
-  if (auto dim_expr = mlir::dyn_cast<AffineDimExpr>(expr)) {
-    return dim_values[dim_expr.getPosition()];
-  }
-  if (auto symbol_expr = mlir::dyn_cast<AffineSymbolExpr>(expr)) {
-    return symbol_values[symbol_expr.getPosition()];
-  }
-  auto binary_expr = mlir::cast<AffineBinaryOpExpr>(expr);
-  int64_t lhs =
-      EvaluateAffineExpr(binary_expr.getLHS(), dim_values, symbol_values);
-  int64_t rhs =
-      EvaluateAffineExpr(binary_expr.getRHS(), dim_values, symbol_values);
-  switch (binary_expr.getKind()) {
-    case AffineExprKind::Add:
-      return lhs + rhs;
-    case AffineExprKind::Mul:
-      return lhs * rhs;
-    case AffineExprKind::FloorDiv:
-      return FloorDiv(lhs, rhs);
-    case AffineExprKind::Mod:
-      return lhs % rhs;
-    default:
-      LOG(FATAL) << "Unsupported expression";
-  }
 }
 
 // Performs backtracking to find all feasible dimensions, symbols that satisfy
@@ -472,7 +522,7 @@ std::vector<Interval> FindContiguousIntervals(
       // Case 1.3: |multiplier| != 1 and g(s) = s.
       if (partitioned_expr.func_of_s0 == range) {
         Interval range_interval = indexing_map.GetSymbolBound(0);
-        int64_t num_elems = range_interval.NumElements();
+        int64_t num_elems = range_interval.GetLoopTripCount();
         // In this case we get a single interval, because the ranges that every
         // thread is reading overlap.
         if (num_elems >= std::abs(multiplier.getValue())) {
@@ -498,14 +548,14 @@ std::vector<Interval> FindContiguousIntervals(
   }
   // Case 2: f(thread_x) != thread_x * multiplier.
   auto intervals = FindIntervals(partitioned_expr.func_of_d0,
-                                 {indexing_map.GetDimVars(0).bounds});
+                                 {indexing_map.GetDimVar(0).bounds});
   // Case 2.1: g(s) != s.
   if (partitioned_expr.func_of_s0 != range) {
     return intervals;
   }
   // Case 2.2: g(s) = s.
   Interval range_interval = indexing_map.GetSymbolBound(0);
-  return ExtendIntervals(intervals, range_interval.NumElements() - 1);
+  return ExtendIntervals(intervals, range_interval.GetLoopTripCount() - 1);
 }
 
 bool IsIndexingCoalesced(IndexingMap& thread_x_to_linearized_input,
@@ -530,7 +580,7 @@ bool IsIndexingCoalesced(IndexingMap& thread_x_to_linearized_input,
   AffineExpr c0 = getAffineConstantExpr(0, mlir_context);
   IndexingMap thread_x_first_32_elements{
       AffineMap::get(1, 0, {thread_x_dim, c0, c0, c0, c0, c0}, mlir_context),
-      {DimVar{{0, 31}}},
+      {IndexingMap::Variable{{0, 31}}},
       /*range_vars=*/{},
       /*rt_vars=*/{}};
   IndexingMap thread_x_to_input_sample =
@@ -580,7 +630,8 @@ CoalescingAnalysis::CoalescingAnalysis(
   }
   // If ComputeCoalescingForAllOperands fails, fallback to using the heuristic.
   is_coalesced_computed_by_heuristic_ =
-      IsReadCoalescedHeuristic(fusion_analysis.GetEmitterFusionKind(), instr);
+      IsReadCoalescedHeuristic(fusion_analysis.GetEmitterFusionKind(),
+                               fusion_analysis.device_info(), instr);
 }
 
 CoalescingAnalysis::CoalescingAnalysis(
@@ -598,7 +649,8 @@ CoalescingAnalysis::CoalescingAnalysis(
   }
   // If ComputeCoalescingForAllOperands fails, fallback to using the heuristic.
   is_coalesced_computed_by_heuristic_ = IsReadCoalescedHeuristic(
-      fusion_analysis.GetEmitterFusionKind(), producer, consumer);
+      fusion_analysis.GetEmitterFusionKind(), fusion_analysis.device_info(),
+      producer, consumer);
 }
 
 bool CoalescingAnalysis::ComputeCoalescingForAllOperands(

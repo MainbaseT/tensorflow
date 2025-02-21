@@ -17,8 +17,7 @@ limitations under the License.
 #define XLA_PJRT_C_PJRT_C_API_FFI_EXTENSION_H_
 
 #include <stddef.h>
-
-#include <cstdint>
+#include <stdint.h>
 
 #include "xla/pjrt/c/pjrt_c_api.h"
 
@@ -31,15 +30,29 @@ extern "C" {
 // and GPU backends it gives access to the XLA FFI internals.
 //
 // See: https://en.wikipedia.org/wiki/Foreign_function_interface
-#define PJRT_API_FFI_EXTENSION_VERSION 1
+#define PJRT_API_FFI_EXTENSION_VERSION 2
+
+struct PJRT_FFI_TypeID_Register_Args {
+  size_t struct_size;
+  PJRT_Extension_Base* extension_start;
+
+  const char* type_name;
+  size_t type_name_size;
+  int64_t type_id;  // out
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_FFI_TypeID_Register_Args, type_id);
+
+// Registers external type in a static type registry.
+typedef PJRT_Error* PJRT_FFI_TypeID_Register(
+    PJRT_FFI_TypeID_Register_Args* args);
 
 // User-data that will be forwarded to the FFI handlers. Deleter is optional,
 // and can be nullptr. Deleter will be called when the context is destroyed.
-struct PJRT_FFI_UserData {
+typedef struct PJRT_FFI_UserData {
   int64_t type_id;
   void* data;
   void (*deleter)(void* data);
-};
+} PJRT_FFI_UserData;
 
 struct PJRT_FFI_UserData_Add_Args {
   size_t struct_size;
@@ -57,6 +70,7 @@ typedef struct PJRT_FFI_Extension {
   size_t struct_size;
   PJRT_Extension_Type type;
   PJRT_Extension_Base* next;
+  PJRT_FFI_TypeID_Register* type_id_register;
   PJRT_FFI_UserData_Add* user_data_add;
 } PJRT_FFI;
 PJRT_DEFINE_STRUCT_TRAITS(PJRT_FFI_Extension, user_data_add);

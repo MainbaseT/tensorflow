@@ -15,11 +15,20 @@ limitations under the License.
 
 #include "xla/service/spmd/stateful_rng_spmd_partitioner.h"
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 
+#include "absl/container/flat_hash_set.h"
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/ir/hlo_sharding.h"
+#include "xla/service/call_graph.h"
+#include "xla/service/spmd/spmd_partitioner.h"
+#include "xla/status_macros.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace spmd {
@@ -77,6 +86,22 @@ bool StatefulRngSpmdPartitioner::CanSideEffectingHaveReplicatedSharding(
     const HloInstruction* hlo) {
   if (hlo->opcode() == HloOpcode::kRngGetAndUpdateState) return true;
   return spmd::SpmdPartitioner::CanSideEffectingHaveReplicatedSharding(hlo);
+}
+
+absl::Status StatefulRngSpmdPartitioner::HandleRotateRightWhilePreprocessing(
+    HloComputation* computation) {
+  if (!computation->IsWhileBodyComputation()) {
+    return absl::OkStatus();
+  }
+  HloInstruction* while_loop = computation->WhileCallInstruction();
+  TF_RET_CHECK(while_loop);
+  if (computation->parent()
+          ->config()
+          .debug_options()
+          .xla_gpu_unsafe_pipelined_loop_annotator()) {
+    while_loop->set_frontend_attribute("is_pipelined_while_loop", "true");
+  }
+  return absl::OkStatus();
 }
 
 }  // namespace spmd
