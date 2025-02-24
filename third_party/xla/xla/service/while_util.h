@@ -23,11 +23,12 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/types/span.h"
+#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/call_inliner.h"
-#include "xla/statusor.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -124,6 +125,11 @@ class WhileUtil {
   // question.
   static absl::flat_hash_map<int64_t, absl::InlinedVector<HloInstruction*, 1>>
   GetGTEsMapForWhileConditional(const HloComputation& while_conditional);
+
+  // Modifies the trip count of the loop by the given increment.
+  // Requires loop body to be incrementing the induction variable by exactly 1.
+  static absl::Status IncrementWhileLoopTripCount(
+      const HloInstruction& while_instruction, int32_t increment);
 };
 }  // namespace xla
 

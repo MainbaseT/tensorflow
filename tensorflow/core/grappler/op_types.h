@@ -23,7 +23,6 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 bool IsAdd(const NodeDef& node);
-bool IsAddV2(const NodeDef& node);
 bool IsAddN(const NodeDef& node);
 bool IsAll(const NodeDef& node);
 bool IsAngle(const NodeDef& node);
@@ -229,8 +228,8 @@ bool IsDataset(const NodeDef& node);
 
 // Returns true if the node op is marked as stateful, or if it was not found in
 // op_registry.
-bool IsStateful(const NodeDef node, const OpRegistryInterface* op_registry);
-bool IsStateful(const NodeDef node);  // use OpRegistry::Global()
+bool IsStateful(const NodeDef& node, const OpRegistryInterface* op_registry);
+bool IsStateful(const NodeDef& node);  // use OpRegistry::Global()
 
 bool IsFreeOfSideEffect(const NodeDef& node,
                         const OpRegistryInterface* op_registry);
@@ -278,14 +277,6 @@ bool IsCastLike(const NodeDef& node);
 // Returns true if this op never forwards any of its inputs, i.e. always
 // allocates buffers for its inputs.
 bool NeverForwardsInputs(const NodeDef& node);
-
-bool IsZeroTensor(const TensorProto& tensor, const DataType& dtype);
-
-bool IsOnesTensor(const TensorProto& tensor, const DataType& dtype);
-
-bool IsZerosNode(const NodeDef& node);
-
-bool IsOnesNode(const NodeDef& node);
 
 }  // end namespace grappler
 }  // end namespace tensorflow

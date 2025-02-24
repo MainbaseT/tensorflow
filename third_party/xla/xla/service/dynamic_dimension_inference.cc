@@ -31,6 +31,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -38,6 +39,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "xla/comparison_util.h"
+#include "xla/hlo/analysis/hlo_dataflow_analysis.h"
 #include "xla/hlo/ir/dfs_hlo_visitor_with_default.h"
 #include "xla/hlo/ir/dynamic_parameter_binding.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
@@ -51,7 +53,6 @@ limitations under the License.
 #include "xla/service/call_inliner.h"
 #include "xla/service/dynamic_window_utils.h"
 #include "xla/service/hlo_creation_utils.h"
-#include "xla/service/hlo_dataflow_analysis.h"
 #include "xla/service/hlo_value.h"
 #include "xla/service/tuple_util.h"
 #include "xla/service/while_util.h"
@@ -59,7 +60,6 @@ limitations under the License.
 #include "xla/shape_tree.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
-#include "xla/statusor.h"
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
@@ -487,9 +487,11 @@ absl::Status DynamicDimensionInferenceVisitor::HandleCustomCall(
     return absl::OkStatus();
   }
 
+  bool handled = false;
   if (custom_call_handler_) {
-    TF_RETURN_IF_ERROR(custom_call_handler_(hlo, parent_));
-  } else {
+    handled = custom_call_handler_(hlo, parent_);
+  }
+  if (!handled) {
     TF_RETURN_IF_ERROR(ForEachOperandDynamicDimension(
         hlo,
         [&](HloInstruction* operand, ShapeIndex index, int64_t dimension,
@@ -2461,7 +2463,9 @@ absl::StatusOr<bool> DynamicDimensionInferenceVisitor::RequiresPadToStatic(
       return true;
     }
     if (use.instruction->opcode() != HloOpcode::kCustomCall ||
-        use.instruction->custom_call_target() != "PadToStatic") {
+        !use.instruction->IsCustomCall({"PadToStatic", "Sharding",
+                                        "SPMDShardToFullShape",
+                                        "SPMDFullToShardShape"})) {
       if (parent_->op_supports_dynamism_handler_ == nullptr) {
         return true;
       }

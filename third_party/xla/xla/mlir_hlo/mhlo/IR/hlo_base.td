@@ -105,6 +105,9 @@ defvar MHLO_PredOrIntTensor = HLO_PredOrIntTensor;
 // Any floating-point or complex tensor types
 defvar MHLO_FpOrComplexTensor = HLO_FpOrComplexTensor;
 
+// Any floating-point or quantized tensor types
+defvar MHLO_FpOrQuantizedIntTensor = HLO_FpOrQuantizedIntTensor;
+
 // Any floating-point, complex or quantized tensor types
 defvar MHLO_FpComplexOrQuantizedIntTensor = HLO_FpComplexOrQuantizedIntTensor;
 
@@ -124,6 +127,8 @@ defvar MHLO_PredIntFpOrQuantizedTensor = HLO_PredIntFpOrQuantizedTensor;
 // In general, static shaped tensor constraints should be avoided unless
 // it is for a legacy op which is only correct with static shapes.
 defvar MHLO_StaticShapeTensor = HLO_StaticShapeTensorOrPerAxisQuantizedTensor;
+
+defvar MHLO_StaticShapeOrBoundedDimTensor = HLO_StaticShapeTensorPerAxisQuantizedTensorOrBoundedTensor;
 
 defvar MHLO_StaticShapeTensorOrToken = HLO_StaticShapeTensorOrPerAxisQuantizedTensorOrToken;
 

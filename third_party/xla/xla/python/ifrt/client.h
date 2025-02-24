@@ -20,23 +20,24 @@ limitations under the License.
 #include <functional>
 #include <memory>
 #include <optional>
-#include <string>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
+#include "absl/base/nullability.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/pjrt/pjrt_client.h"
-#include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_compiler.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/array.h"
+#include "xla/python/ifrt/attribute_map.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/device_list.h"
 #include "xla/python/ifrt/dtype.h"
 #include "xla/python/ifrt/future.h"
+#include "xla/python/ifrt/memory.h"
 #include "xla/python/ifrt/remap_plan.h"
 #include "xla/python/ifrt/shape.h"
 #include "xla/python/ifrt/sharding.h"
@@ -109,15 +110,51 @@ class Client : public llvm::RTTIExtends<Client, llvm::RTTIRoot> {
   virtual absl::StatusOr<tsl::RCReference<Array>> MakeArrayFromHostBuffer(
       const void* data, DType dtype, Shape shape,
       std::optional<absl::Span<const int64_t>> byte_strides,
-      std::shared_ptr<const Sharding> sharding, HostBufferSemantics semantics,
+      absl::Nonnull<std::shared_ptr<const Sharding>> sharding,
+      HostBufferSemantics semantics,
       std::function<void()> on_done_with_host_buffer) = 0;
 
   // Builds a larger array out of individual per-device shards.
+  // TODO(hyeontaek): Replace this API with the version that takes
+  // `SingleDeviceShardSemantics` and `dtype`.
   virtual absl::StatusOr<tsl::RCReference<Array>>
   AssembleArrayFromSingleDeviceArrays(
-      Shape shape, std::shared_ptr<const Sharding> sharding,
+      Shape shape, absl::Nonnull<std::shared_ptr<const Sharding>> sharding,
       absl::Span<tsl::RCReference<Array>> arrays,
       ArrayCopySemantics semantics) = 0;
+  virtual absl::StatusOr<tsl::RCReference<Array>>
+  AssembleArrayFromSingleDeviceArrays(
+      Shape shape, absl::Nonnull<std::shared_ptr<const Sharding>> sharding,
+      absl::Span<tsl::RCReference<Array>> arrays,
+      ArrayCopySemantics array_copy_semantics,
+      SingleDeviceShardSemantics single_device_shard_semantics) = 0;
+  virtual absl::StatusOr<tsl::RCReference<Array>>
+  AssembleArrayFromSingleDeviceArrays(
+      DType dtype, Shape shape,
+      absl::Nonnull<std::shared_ptr<const Sharding>> sharding,
+      absl::Span<tsl::RCReference<Array>> arrays,
+      ArrayCopySemantics array_copy_semantics,
+      SingleDeviceShardSemantics single_device_shard_semantics) = 0;
+
+  // Copies the arrays to a new set of devices.
+  //
+  // This method copies individual buffers of each array to the destination
+  // devices without altering their physical layout.
+  //
+  // This API should be used only with arrays that have the same source device
+  // list and memory kind. Every IFRT implementation must enforce this by
+  // returning an `INVALID_ARGUMENT` error if `arrays` contains different device
+  // lists or memory kinds.
+  //
+  // Implementations may return `UNIMPLEMENTED` if they do not know how to copy
+  // the data as instructed.
+  //
+  // It may fail if the buffer data would be sent from/to an unaddressable
+  // device.
+  virtual absl::StatusOr<std::vector<tsl::RCReference<Array>>> CopyArrays(
+      absl::Span<tsl::RCReference<Array>> arrays,
+      std::optional<DeviceListRef> devices,
+      std::optional<MemoryKind> memory_kind, ArrayCopySemantics semantics) = 0;
 
   // Remaps shards across input `Array`s to create new `Array`s based on `plan`.
   // This array remapping is a metadata-only operation that can shuffle or
@@ -157,13 +194,14 @@ class Client : public llvm::RTTIExtends<Client, llvm::RTTIRoot> {
   virtual absl::StatusOr<tsl::RCReference<Tuple>> MakeTuple(
       absl::Span<tsl::RCReference<Value>> values) = 0;
 
+  // Identifies the IFRT implementation. Most C++ users should use LLVM RTTI to
+  // determine the runtime type. This is a string exposed to users mostly for
+  // informational reasons.
+  virtual absl::string_view runtime_type() const = 0;
+
   // The following APIs are taken from `xla::PjRtClient` for fast prototyping.
   // Most of the APIs will be factored out as a `Platform`/`Topology` in the
   // future to facilitate topology discovery and ahead-of-time compilation.
-
-  // TODO(hyeontaek): Remove runtime_type() in favor of LLVM RTTI.
-  virtual absl::string_view runtime_type() const = 0;
-
   // TODO(hyeontaek): Factor them out to a `Platform`/`Topology` class.
   virtual absl::string_view platform_name() const = 0;
   virtual absl::string_view platform_version() const = 0;
@@ -177,15 +215,18 @@ class Client : public llvm::RTTIExtends<Client, llvm::RTTIRoot> {
   // * supports_executable_serialization (bool; default = true): Whether IFRT
   //   executables produced by this client are serializable. If false, all
   //   executables from this client are considered not serializable.
-  using ClientAttribute = xla::PjRtValueType;
-  virtual absl::flat_hash_map<std::string, ClientAttribute> attributes()
-      const = 0;
+  virtual const AttributeMap& Attributes() const = 0;
 
   virtual int device_count() const = 0;
   virtual int addressable_device_count() const = 0;
   virtual absl::Span<Device* const> devices() const = 0;
   virtual absl::Span<Device* const> addressable_devices() const = 0;
   virtual int process_index() const = 0;
+
+  // Returns all devices. The result includes primary devices that are included
+  // in `devices()` as well as any other devices that are associated with
+  // the primary devices.
+  virtual absl::Span<xla::ifrt::Device* const> GetAllDevices() const = 0;
 
   // TODO(hyeontaek): Consider removing this API. This API is potentially not
   // being used by JAX or will be replaced with explicit device assignment.
@@ -195,20 +236,25 @@ class Client : public llvm::RTTIExtends<Client, llvm::RTTIRoot> {
   virtual absl::StatusOr<Device*> LookupAddressableDevice(
       int local_hardware_id) const = 0;
 
+  // Creates a device list from the given list of devices.
+  virtual DeviceListRef MakeDeviceList(
+      absl::Span<Device* const> devices) const = 0;
+
   // TODO(hyeontaek): Potentially remove this method to encourage supporting
   // only ahead-of-time compilation.
   virtual Compiler* GetDefaultCompiler() = 0;
 
   // Returns a topology that covers the provided devices.
   virtual absl::StatusOr<std::shared_ptr<Topology>> GetTopologyForDevices(
-      const DeviceList& devices) const = 0;
+      const DeviceListRef& devices) const = 0;
 
-  // Returns the default layout on `device` for a buffer with `dtype` and
-  // single-shard dimensions `dims`.
+  // Returns the default layout on `device` with `memory_kind` for a buffer with
+  // `dtype` and single-shard dimensions `dims`.
   // TODO(hyeontaek): Change the API to take `Shape` and `Sharding` instead of
   // single-shard dimensions and device.
-  virtual absl::StatusOr<std::unique_ptr<PjRtLayout>> GetDefaultLayoutForDevice(
-      DType dtype, absl::Span<const int64_t> dims, Device* device) const = 0;
+  virtual absl::StatusOr<std::shared_ptr<const PjRtLayout>> GetDefaultLayout(
+      DType dtype, absl::Span<const int64_t> dims, Device* device,
+      xla::ifrt::MemoryKind memory_kind) const = 0;
 
   static char ID;  // NOLINT
 };

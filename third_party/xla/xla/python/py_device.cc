@@ -22,20 +22,20 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_join.h"
+#include "absl/strings/string_view.h"
 #include "llvm/Support/Casting.h"
-#include "third_party/nanobind/include/nanobind/nanobind.h"
-#include "third_party/nanobind/include/nanobind/stl/optional.h"  // IWYU pragma: keep
-#include "third_party/nanobind/include/nanobind/stl/string.h"  // IWYU pragma: keep
-#include "third_party/nanobind/include/nanobind/stl/string_view.h"  // IWYU pragma: keep
-#include "third_party/nanobind/include/nanobind/stl/variant.h"  // IWYU pragma: keep
-#include "third_party/nanobind/include/nanobind/stl/vector.h"  // IWYU pragma: keep
+#include "nanobind/nanobind.h"
+#include "nanobind/stl/optional.h"  // IWYU pragma: keep
+#include "nanobind/stl/string.h"  // IWYU pragma: keep
+#include "nanobind/stl/string_view.h"  // IWYU pragma: keep
+#include "nanobind/stl/variant.h"  // IWYU pragma: keep
+#include "nanobind/stl/vector.h"  // IWYU pragma: keep
 #include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/pjrt/status_casters.h"
@@ -50,10 +50,10 @@ limitations under the License.
 #include "xla/python/types.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/tsl/framework/allocator.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/util.h"
-#include "tsl/framework/allocator.h"
-#include "tsl/platform/errors.h"
-#include "tsl/platform/statusor.h"
 
 namespace nb = ::nanobind;
 
@@ -66,7 +66,7 @@ int PyDevice::id() const { return device_->Id().value(); }
 
 int PyDevice::process_index() const { return device_->ProcessIndex(); }
 
-std::string_view PyDevice::platform() const {
+absl::string_view PyDevice::platform() const {
   // TODO(phawkins): this is a temporary backwards
   // compatibility shim. We changed the name PJRT
   // reports for GPU platforms to "cuda" or "rocm",
@@ -75,13 +75,13 @@ std::string_view PyDevice::platform() const {
   // code.
   if (client_->platform_name() == "cuda" ||
       client_->platform_name() == "rocm") {
-    return std::string_view("gpu");
+    return absl::string_view("gpu");
   } else {
     return client_->platform_name();
   }
 }
 
-std::string_view PyDevice::device_kind() const { return device_->Kind(); }
+absl::string_view PyDevice::device_kind() const { return device_->Kind(); }
 
 std::optional<int> PyDevice::local_hardware_id() const {
   // TODO(phawkins): consider supporting this for non-PJRT devices.
@@ -89,16 +89,16 @@ std::optional<int> PyDevice::local_hardware_id() const {
   if (device == nullptr || !device->IsAddressable()) {
     return std::nullopt;
   }
-  int local_hardware_id = device->pjrt_device()->local_hardware_id();
+  int local_hardware_id = device->pjrt_device()->local_hardware_id().value();
   if (local_hardware_id == -1) {
     return std::nullopt;
   }
   return local_hardware_id;
 }
 
-std::string_view PyDevice::Str() const { return device_->DebugString(); }
+absl::string_view PyDevice::Str() const { return device_->DebugString(); }
 
-std::string_view PyDevice::Repr() const { return device_->ToString(); }
+absl::string_view PyDevice::Repr() const { return device_->ToString(); }
 
 absl::Status PyDevice::TransferToInfeed(LiteralSlice literal) {
   GlobalPyRefManager()->CollectGarbage();
@@ -136,7 +136,7 @@ absl::StatusOr<nb::object> PyDevice::TransferFromOutfeed(Shape shape) {
 }
 
 absl::StatusOr<nb_class_ptr<PyMemorySpace>> PyDevice::Memory(
-    std::string_view kind) const {
+    absl::string_view kind) const {
   ifrt::Memory* result_memory_space = nullptr;
   for (auto* memory_space : device_->Memories()) {
     if (memory_space->Kind().memory_kind() == kind) {
@@ -297,6 +297,7 @@ PyType_Slot PyDevice::slots_[] = {
       .def("live_buffers",
            [](nb::handle device) {
              PythonDeprecationWarning(
+                 /*stacklevel=*/1,
                  "Per device live_buffers() is deprecated. Please "
                  "use the jax.live_arrays() for jax.Arrays instead.");
              return nb::list();
@@ -320,12 +321,12 @@ PyType_Slot PyDevice::slots_[] = {
         }
         try {
           auto device = nb::cast<PyDevice*>(nb::handle(self));
-          auto name = nb::cast<std::string_view>(nb::handle(key));
-          const auto& attrs = device->device_->Attributes();
+          auto name = nb::cast<absl::string_view>(nb::handle(key));
+          const auto& attrs = device->device_->Attributes().map();
           auto it = attrs.find(name);
           if (it != attrs.end()) {
-            auto result =
-                std::visit([](auto&& v) { return nb::cast(v); }, it->second);
+            auto result = std::visit([](auto&& v) { return nb::cast(v.value); },
+                                     it->second);
             return result.release().ptr();
           }
           PyErr_SetNone(PyExc_AttributeError);

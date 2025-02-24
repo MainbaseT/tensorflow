@@ -21,9 +21,10 @@ limitations under the License.
 #include <limits>
 #include <vector>
 
+#include "absl/strings/ascii.h"
 #include "xla/primitive_util.h"
 #include "xla/service/gpu/stream_executor_util.h"
-#include "xla/service/hlo_module_config.h"
+#include "xla/service/platform_util.h"
 #include "xla/shape_util.h"
 #include "xla/stream_executor/device_memory.h"
 #include "xla/stream_executor/device_memory_handle.h"
@@ -39,21 +40,22 @@ namespace xla {
 namespace gpu {
 namespace {
 
+constexpr double kDefaultTolerance = 0.1;
+
 class BufferComparatorTest : public testing::Test {
  protected:
-  BufferComparatorTest()
-#if GOOGLE_CUDA
-      : platform_(se::PlatformManager::PlatformWithName("CUDA").value()),
-#elif TENSORFLOW_USE_ROCM
-      : platform_(se::PlatformManager::PlatformWithName("ROCM").value()),
-#endif
-        stream_exec_(platform_->ExecutorForDevice(0).value()) {
+  BufferComparatorTest() {
+    auto name = absl::AsciiStrToUpper(
+        xla::PlatformUtil::CanonicalPlatformName("gpu").value());
+    platform_ = se::PlatformManager::PlatformWithName(name).value();
+    stream_exec_ = platform_->ExecutorForDevice(0).value();
   }
 
   // Take floats only for convenience. Still uses ElementType internally.
   template <typename ElementType>
   bool CompareEqualBuffers(const std::vector<ElementType>& current,
-                           const std::vector<ElementType>& expected) {
+                           const std::vector<ElementType>& expected,
+                           double tolerance) {
     auto stream = stream_exec_->CreateStream().value();
 
     se::DeviceMemoryHandle current_buffer(
@@ -72,7 +74,7 @@ class BufferComparatorTest : public testing::Test {
         ShapeUtil::MakeShape(
             primitive_util::NativeToPrimitiveType<ElementType>(),
             {static_cast<int64_t>(current.size())}),
-        HloModuleConfig());
+        tolerance);
     return comparator
         .CompareEqual(stream.get(), current_buffer.memory(),
                       expected_buffer.memory())
@@ -82,16 +84,18 @@ class BufferComparatorTest : public testing::Test {
   // Take floats only for convenience. Still uses ElementType internally.
   template <typename ElementType>
   bool CompareEqualFloatBuffers(const std::vector<float>& lhs_float,
-                                const std::vector<float>& rhs_float) {
+                                const std::vector<float>& rhs_float,
+                                double tolerance = kDefaultTolerance) {
     std::vector<ElementType> lhs(lhs_float.begin(), lhs_float.end());
     std::vector<ElementType> rhs(rhs_float.begin(), rhs_float.end());
-    return CompareEqualBuffers(lhs, rhs);
+    return CompareEqualBuffers(lhs, rhs, tolerance);
   }
 
   template <typename ElementType>
   bool CompareEqualComplex(const std::vector<std::complex<ElementType>>& lhs,
                            const std::vector<std::complex<ElementType>>& rhs) {
-    return CompareEqualBuffers<std::complex<ElementType>>(lhs, rhs);
+    return CompareEqualBuffers<std::complex<ElementType>>(lhs, rhs,
+                                                          kDefaultTolerance);
   }
 
   se::Platform* platform_;
@@ -177,7 +181,7 @@ TEST_F(BufferComparatorTest, TestInfs) {
   EXPECT_FALSE(CompareEqualFloatBuffers<double>({inf}, {-20}));
   EXPECT_FALSE(CompareEqualFloatBuffers<double>({-inf}, {20}));
   EXPECT_FALSE(CompareEqualFloatBuffers<double>({-inf}, {-20}));
-#if GOOGLE_CUDA
+
   EXPECT_TRUE(
       CompareEqualFloatBuffers<tsl::float8_e4m3fn>({inf}, {std::nanf("")}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({inf}, {inf}));
@@ -197,47 +201,73 @@ TEST_F(BufferComparatorTest, TestInfs) {
   EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({inf}, {-20}));
   EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({-inf}, {20}));
   EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({-inf}, {-20}));
-#endif  // GOOGLE_CUDA
 }
 
 TEST_F(BufferComparatorTest, TestNumbers) {
   EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({20}, {20.1}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<Eigen::half>({20}, {23.0}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({20}, {23.0}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<Eigen::half>({20}, {26.0}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<Eigen::half>({0}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({0.9}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({9}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({10}, {9}));
 
   EXPECT_TRUE(CompareEqualFloatBuffers<float>({20}, {20.1}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<float>({20}, {23.0}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<float>({20}, {23.0}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<float>({20}, {26.0}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<float>({0}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<float>({0.9}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<float>({9}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<float>({10}, {9}));
 
   EXPECT_TRUE(CompareEqualFloatBuffers<double>({20}, {20.1}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<double>({20}, {23.0}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<double>({20}, {23.0}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<double>({20}, {26.0}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<double>({0}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<double>({0.9}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<double>({9}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<double>({10}, {9}));
 
   EXPECT_TRUE(CompareEqualFloatBuffers<int8_t>({100}, {101}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<int8_t>({100}, {120}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<int8_t>({100}, {120}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<int8_t>({90}, {120}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<int8_t>({0}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<int8_t>({9}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<int8_t>({90}, {100}));
   EXPECT_TRUE(CompareEqualFloatBuffers<int8_t>({100}, {90}));
   EXPECT_FALSE(CompareEqualFloatBuffers<int8_t>({-128}, {127}));
-#if GOOGLE_CUDA
+
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({20}, {20.1}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({20}, {23.0}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({20}, {23.0}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({20}, {26.0}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({0}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({0.9}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({9}, {10}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>({9}, {10}));
 
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e5m2>({20}, {20.1}));
+  EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({20}, {23.0}));
+  EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e5m2>({20}, {23.0}, 0.2));
+  EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({20}, {30.0}, 0.2));
   EXPECT_FALSE(CompareEqualFloatBuffers<tsl::float8_e5m2>({0}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e5m2>({0.9}, {1}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e5m2>({11}, {12}));
   EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e5m2>({12}, {11}));
-#endif  // GOOGLE_CUDA
+
+  // Rerunning tests with increased relative tolerance
+  const double tol = 0.001;
+  EXPECT_FALSE(CompareEqualFloatBuffers<Eigen::half>({0.9}, {1}, tol));
+  EXPECT_TRUE(CompareEqualFloatBuffers<Eigen::half>({0.9}, {0.901}, tol));
+  EXPECT_FALSE(CompareEqualFloatBuffers<float>({10}, {10.1}, tol));
+  EXPECT_TRUE(CompareEqualFloatBuffers<float>({10}, {10.01}, tol));
+  EXPECT_FALSE(CompareEqualFloatBuffers<int8_t>({100}, {101}, tol));
+  EXPECT_FALSE(CompareEqualFloatBuffers<double>({20}, {20.1}, tol));
+  EXPECT_TRUE(CompareEqualFloatBuffers<double>({20}, {20.01}, tol));
 }
 
 TEST_F(BufferComparatorTest, TestMultiple) {
@@ -308,7 +338,6 @@ TEST_F(BufferComparatorTest, TestMultiple) {
       rhs[i] = 0;
     }
   }
-#if GOOGLE_CUDA
   {
     EXPECT_TRUE(CompareEqualFloatBuffers<tsl::float8_e4m3fn>(
         {20, 30, 40, 50, 60}, {20.1, 30.1, 40.1, 50.1, 60.1}));
@@ -342,7 +371,6 @@ TEST_F(BufferComparatorTest, TestMultiple) {
       rhs[i] = 0;
     }
   }
-#endif  // GOOGLE_CUDA
 }
 
 TEST_F(BufferComparatorTest, BF16) {
@@ -361,8 +389,7 @@ TEST_F(BufferComparatorTest, BF16) {
       stream_exec_->AllocateArray<Eigen::bfloat16>(element_count));
   InitializeBuffer(stream.get(), BF16, &rng_state, rhs.memory());
 
-  BufferComparator comparator(ShapeUtil::MakeShape(BF16, {element_count}),
-                              HloModuleConfig());
+  BufferComparator comparator(ShapeUtil::MakeShape(BF16, {element_count}));
   EXPECT_FALSE(comparator.CompareEqual(stream.get(), lhs.memory(), rhs.memory())
                    .value());
 }

@@ -16,25 +16,33 @@ limitations under the License.
 #ifndef XLA_CLIENT_LOCAL_CLIENT_H_
 #define XLA_CLIENT_LOCAL_CLIENT_H_
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "xla/client/client.h"
 #include "xla/client/executable_build_options.h"
-#include "xla/client/xla_computation.h"
 #include "xla/executable_run_options.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/literal.h"
+#include "xla/service/backend.h"
 #include "xla/service/compiler.h"
 #include "xla/service/executable.h"
 #include "xla/service/local_service.h"
 #include "xla/service/maybe_owning_device_memory.h"
+#include "xla/service/service_executable_run_options.h"
 #include "xla/service/shaped_buffer.h"
+#include "xla/service/stream_pool.h"
 #include "xla/shape_tree.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -74,6 +82,10 @@ class LocalExecutable {
   // Return the built executable.
   Executable* executable() const { return executable_.get(); }
 
+  // Verifies that the a device is compatible with the executable's
+  // build device.
+  absl::Status VerifyRunDeviceCompatible(int run_device_ordinal) const;
+
  private:
   absl::StatusOr<ExecutionOutput> RunAsync(
       absl::Span<Shape const* const> argument_host_shapes,
@@ -104,7 +116,8 @@ class LocalExecutable {
   absl::StatusOr<T> AsyncCallAndBlockHostUntilDone(
       absl::Span<Shape const* const> argument_shapes,
       const ExecutableRunOptions& run_options,
-      std::function<StatusOr<T>(const ExecutableRunOptions&)> async_callback) {
+      std::function<absl::StatusOr<T>(const ExecutableRunOptions&)>
+          async_callback) {
     TF_ASSIGN_OR_RETURN(auto options_and_stream,
                         RunHelper(argument_shapes, run_options));
     ExecutableRunOptions options = options_and_stream.first.run_options();
@@ -170,7 +183,7 @@ class LocalClient : public Client {
       se::DeviceMemoryAllocator* allocator = nullptr);
 
   // Transfer the BorrowingLiteral to the device with the given ordinal.
-  absl::StatusOr<TransferToServerResponse> TransferToLocalServer(
+  absl::StatusOr<GlobalDataHandle> TransferToLocalServer(
       const ::xla::BorrowingLiteral& literal, int device_ordinal);
 
   // Copy the data from the device contained in the given ShapedBuffer and

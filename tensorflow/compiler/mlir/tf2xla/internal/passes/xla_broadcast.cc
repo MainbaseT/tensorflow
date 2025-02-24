@@ -48,6 +48,7 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/utils/device_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/tpu_rewrite_device_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/xla_rewrite_util.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/xla_sharding_util.h"
 
 namespace tensorflow {
 namespace tf2xla {
@@ -87,6 +88,7 @@ using mlir::tf_device::ReplicateOp;
 #define GEN_PASS_DEF_XLABROADCASTPASS
 #include "tensorflow/compiler/mlir/tf2xla/internal/passes/clustering_passes.h.inc"
 
+
 struct XlaBroadcast : public impl::XlaBroadcastPassBase<XlaBroadcast> {
   void runOnOperation() override;
 };
@@ -120,9 +122,16 @@ bool GetDummyParams(OpBuilder& builder, Value val_bcast, Attribute& zero,
 // Create a dummy zero to be fed locally from the host to the TPUExecute.
 Value CreateZeroInput(Location loc, OpBuilder& builder, Attribute zero_attr,
                       DenseIntElementsAttr shape_attr) {
-  Value zero = builder.create<ConstOp>(loc, zero_attr);
-  Value shape = builder.create<ConstOp>(loc, shape_attr);
-  return builder.create<FillOp>(loc, shape, zero);
+  ConstOp zero = builder.create<ConstOp>(loc, zero_attr);
+  zero->setAttr(kICIWeightDistributionMlirBridgeMarker,
+                builder.getBoolAttr(true));
+  ConstOp shape = builder.create<ConstOp>(loc, shape_attr);
+  shape->setAttr(kICIWeightDistributionMlirBridgeMarker,
+                 builder.getBoolAttr(true));
+  FillOp fill = builder.create<FillOp>(loc, shape, zero);
+  fill->setAttr(kICIWeightDistributionMlirBridgeMarker,
+                builder.getBoolAttr(true));
+  return fill;
 }
 
 // Add parallel collection of inputs to the replicated op.
@@ -263,9 +272,14 @@ LogicalResult MoveBroadcastToCluster(OpBuilder& builder,
   OpBuilder before_cluster_builder(cluster);
   IdentityOp assigned_id = before_cluster_builder.create<IdentityOp>(
       val_bcast.getLoc(), block_arg.getType(), block_arg);
+  assigned_id->setAttr(kICIWeightDistributionMlirBridgeMarker,
+                       before_cluster_builder.getBoolAttr(true));
   std::string device = tensorflow::GetDeviceAliasForHostOfLogicalCore(0);
   LaunchOp launch = tensorflow::WrapOpInLaunch(
       &before_cluster_builder, val_bcast.getLoc(), assigned_id, device);
+
+  launch->setAttr(kICIWeightDistributionMlirBridgeMarker,
+                  before_cluster_builder.getBoolAttr(true));
 
   Value all_reduce =
       CreateAllReduce(replicate, inner_builder, launch.getResult(0));
@@ -288,11 +302,6 @@ LogicalResult MoveAllBroadcastsToCluster(ClusterOp cluster,
   if (!num_cores_per_replica_attr)
     return cluster.emitOpError(
         CreateMissingAttributeMsg(tensorflow::kNumCoresPerReplicaAttr));
-  int num_cores_per_replica = num_cores_per_replica_attr.getInt();
-
-  // TODO(b/329483850): Support spmd ICI weight distribution so when num of core
-  // per replica > 1, it does not need to be skipped.
-  if (num_cores_per_replica != 1) return success();
 
   llvm::SetVector<Value> bcasts;
   cluster->walk([&](Operation* op) {

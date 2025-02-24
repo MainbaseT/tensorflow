@@ -18,27 +18,30 @@ limitations under the License.
 
 #include <Python.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "llvm/Support/Casting.h"
-#include "third_party/nanobind/include/nanobind/nanobind.h"
-#include "xla/client/xla_builder.h"
+#include "nanobind/nanobind.h"
 #include "xla/pjrt/exceptions.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
+#include "xla/python/ifrt/attribute_map.h"
 #include "xla/python/ifrt/client.h"
 #include "xla/python/ifrt/compiler.h"
 #include "xla/python/ifrt/device.h"
+#include "xla/python/ifrt/program.h"
 #include "xla/python/nb_class_ptr.h"
 #include "xla/python/pjrt_ifrt/pjrt_client.h"
 #include "xla/shape.h"
@@ -63,6 +66,9 @@ class PyClient {
   virtual ~PyClient();
 
   ifrt::Client* ifrt_client() const { return ifrt_client_.get(); }
+  const std::shared_ptr<ifrt::Client>& shared_ptr_ifrt_client() const {
+    return ifrt_client_;
+  }
 
   // Short-term escape hatch to get PjRtClient from PyClient.
   // TODO(hyeontaek): Migrate all users of this method to be agnostic of PjRt.
@@ -90,7 +96,7 @@ class PyClient {
     return shared_ptr_pjrt_client();
   }
 
-  std::string_view platform_name() const {
+  absl::string_view platform_name() const {
     // TODO(phawkins): this is a temporary backwards compatibility shim. We
     // changed the name PJRT reports for GPU platforms to "cuda" or "rocm", but
     // we haven't yet updated JAX clients that expect "gpu". Migrate users and
@@ -102,15 +108,20 @@ class PyClient {
       return ifrt_client_->platform_name();
     }
   }
-  std::string_view platform_version() const {
+  absl::string_view raw_platform_name() const {
+    // TODO(parkers): Once platform_name() is the same, remove this.
+    return ifrt_client_->platform_name();
+  }
+  absl::string_view platform_version() const {
     return ifrt_client_->platform_version();
   }
-  std::string_view runtime_type() const { return ifrt_client_->runtime_type(); }
+  absl::string_view runtime_type() const {
+    return ifrt_client_->runtime_type();
+  }
 
   // Returns implementation-specific attributes about this client, e.g. the PJRT
   // C API version if applicable.
-  const absl::flat_hash_map<std::string, xla::ifrt::Client::ClientAttribute>&
-  attributes() const {
+  const xla::ifrt::AttributeMap& Attributes() const {
     return client_attributes_;
   }
 
@@ -122,6 +133,11 @@ class PyClient {
 
   std::vector<nb_class_ptr<PyDevice>> Devices();
   std::vector<nb_class_ptr<PyDevice>> LocalDevices();
+  // Returns all devices in the client. Private API; only use this method for
+  // implementing backend._get_all_devices().
+  // TODO(hyeontaek): Remove this method once we have a unified API for
+  // enumerating devices with different criteria.
+  std::vector<nb_class_ptr<PyDevice>> GetAllDevices();
   absl::StatusOr<nb_class_ptr<PyDevice>> DeviceFromLocalHardwareId(
       int local_hardware_id);
 
@@ -176,23 +192,19 @@ class PyClient {
   // The callable receives as arguments NumPy arrays for arguments with array
   // types, and None for Token argument. The callable must return a tuple of
   // either arrays or None values.
-  // TODO(phawkins): pass operand_shapes and result_shapes as
-  // absl::Span<Shape const> when nanobind transition is complete.
   absl::StatusOr<std::pair<uint64_t, nanobind::object>>
   GetEmitPythonCallbackDescriptor(nanobind::callable callable,
-                                  nanobind::object operand_shapes,
-                                  nanobind::object result_shapes);
-  // Deprecated; please switch to emitting a `CustomCallOp` directly.
-  absl::StatusOr<XlaOp> EmitPythonCallbackFromDescriptor(
-      XlaBuilder& builder, uint64_t descriptor,
-      absl::Span<XlaOp const> operands, absl::Span<Shape const> result_shapes,
-      std::optional<std::vector<Shape>> operand_layouts, bool has_side_effect);
-  // Deprecated; please switch to using `GetEmitPythonCallbackDescriptor`
-  // and then emitting a `CustomCall` op instead.
-  absl::StatusOr<std::pair<XlaOp, nanobind::object>> EmitPythonCallback(
-      nanobind::callable callable, XlaBuilder& builder,
-      absl::Span<XlaOp const> operands, absl::Span<Shape const> result_shapes,
-      std::optional<std::vector<Shape>> operand_layouts, bool has_side_effect);
+                                  absl::Span<Shape const> operand_shapes,
+                                  absl::Span<Shape const> result_shapes);
+
+  // `GetEmitPythonCallback` takes in an input Python callable. It returns a
+  // Python object whose reference will keep the Python callback alive.
+  //
+  // The callable receives as arguments NumPy arrays for arguments with array
+  // types, and None for Token argument. The callable must return a tuple of
+  // either arrays or None values.
+  absl::StatusOr<nanobind::object> GetEmitPythonCallback(
+      nanobind::callable callable);
 
   // `MakePythonCallbackUsingHostSendAndRecv` takes in an input Python callable
   // that takes in arguments of shapes `operand_shapes` and returns results of
@@ -216,7 +228,7 @@ class PyClient {
       absl::Span<uint16_t const> recv_channel_ids,
       nanobind::callable serializer);
 
-  std::vector<nanobind::object> LiveArrays() const;
+  std::vector<PyArray> LiveArrays() const;
 
   static void RegisterPythonTypes(nanobind::module_& m);
 
@@ -233,14 +245,25 @@ class PyClient {
   static PyType_Slot slots_[];
 
   std::shared_ptr<ifrt::Client> ifrt_client_;
-  absl::flat_hash_map<std::string, xla::ifrt::Client::ClientAttribute>
-      client_attributes_;
+  xla::ifrt::AttributeMap client_attributes_;
   // Pointers to intrusive doubly-linked lists of arrays and executables, used
   // to iterate over all known objects when heap profiling. The list structure
   // is protected by the GIL.
 
+  nanobind::ft_mutex executables_mutex_;
+  // List guarded by executables_mutex_.
   PyLoadedExecutable* executables_ = nullptr;
-  PyArray_Storage* arrays_ = nullptr;
+
+#ifdef NB_FREE_THREADING
+  static constexpr size_t kNumArraysShards = 16;
+#else
+  static constexpr size_t kNumArraysShards = 1;
+#endif
+  struct ArraysShard {
+    mutable nanobind::ft_mutex mutex;
+    PyArray_Storage* arrays;
+  };
+  std::array<ArraysShard, kNumArraysShards> arrays_;
 
   absl::flat_hash_map<ifrt::Device*, nb_class_ptr<PyDevice>> devices_;
   absl::flat_hash_map<ifrt::Memory*, nb_class_ptr<PyMemorySpace>>

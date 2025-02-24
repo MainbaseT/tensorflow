@@ -12,13 +12,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <cstddef>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "tensorflow/core/lib/core/errors.h"
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tooling_util.h"

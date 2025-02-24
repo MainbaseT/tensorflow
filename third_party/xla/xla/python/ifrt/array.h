@@ -19,11 +19,12 @@ limitations under the License.
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <string>
-#include <utility>
 #include <vector>
 
-#include "absl/status/status.h"
+#include "absl/base/attributes.h"
+#include "absl/base/nullability.h"
+#include "absl/status/statusor.h"
+#include "absl/types/span.h"
 #include "llvm/Support/ExtensibleRTTI.h"
 #include "xla/pjrt/pjrt_layout.h"
 #include "xla/python/ifrt/dtype.h"
@@ -37,8 +38,6 @@ namespace xla {
 namespace ifrt {
 
 class Client;
-
-using Layout = ::xla::PjRtLayout;
 
 // Semantics for operations that may copy or move sharded buffers in an array.
 enum class ArrayCopySemantics : int {
@@ -72,16 +71,24 @@ class Array : public llvm::RTTIExtends<Array, Value> {
   virtual DType dtype() const = 0;
   virtual const Shape& shape() const = 0;
   virtual const Sharding& sharding() const = 0;
-  virtual std::shared_ptr<const Sharding> shared_ptr_sharding() const = 0;
+  virtual absl::Nonnull<std::shared_ptr<const Sharding>> shared_ptr_sharding()
+      const = 0;
   // The device memory layout for each shard of the Array. All shards are
   // assumed to have the same layout. Cannot be nullptr; implementations should
   // return UNIMPLEMENTED instead.
-  virtual absl::StatusOr<std::unique_ptr<PjRtLayout>> layout() const = 0;
+  virtual absl::StatusOr<std::shared_ptr<const PjRtLayout>> layout() const = 0;
 
   // Breaks an array up into per-device arrays. This is the elimination
   // counterpart of `Client::AssembleArrayFromSingleDeviceArrays()`.
+  // TODO(hyeontaek): Replace this API with the version that takes
+  // `SingleDeviceShardSemantics`.
   virtual absl::StatusOr<std::vector<tsl::RCReference<Array>>>
   DisassembleIntoSingleDeviceArrays(ArrayCopySemantics semantics) = 0;
+  virtual absl::StatusOr<std::vector<tsl::RCReference<Array>>>
+  DisassembleIntoSingleDeviceArrays(
+      ArrayCopySemantics array_copy_semantics,
+      SingleDeviceShardSemantics single_device_shard_semantics) = 0;
+
   // Returns a shard of an Array which is fully replicated. This is an
   // optimization so that instead of disassembling into all the shards when
   // the Array is fully replicated, we can just get 1 shard out and create an
@@ -119,26 +126,6 @@ class Array : public llvm::RTTIExtends<Array, Value> {
   ABSL_MUST_USE_RESULT
   virtual Future<> CopyToHostBuffer(
       void* data, std::optional<absl::Span<const int64_t>> byte_strides,
-      ArrayCopySemantics semantics) = 0;
-
-  // Copies the array with a new sharding, creating a new array.
-  //
-  // Resharding falls into one of the three cases:
-  //
-  // * Metadata-only resharding: Use a new sharding for the array that expects
-  //   the same physical layout of underlying buffers on the same devices.
-  // * 1-to-1 buffer copy: Copy individual buffers to different devices without
-  //   altering their physical layout.
-  // * M-to-N buffer resharding: Shuffle the buffer data across the boundary of
-  //   the buffers, changing their physical layout.
-  //
-  // Implementations may return `UNIMPLEMENTED` if they do not know how to copy
-  // or reshuffle the data to match the new sharding.
-  //
-  // It may fail if the buffer data would be sent from/to an unaddressable
-  // device.
-  virtual absl::StatusOr<tsl::RCReference<Array>> Reshard(
-      std::shared_ptr<const Sharding> new_sharding,
       ArrayCopySemantics semantics) = 0;
 
   static char ID;  // NOLINT

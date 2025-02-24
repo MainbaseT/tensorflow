@@ -4,27 +4,33 @@
 load("@bazel_skylib//lib:versions.bzl", "versions")
 
 # Import TSL Workspaces
-load("@local_tsl//:workspace2.bzl", "tsl_workspace2")
+load("//:tsl_workspace2.bzl", "tsl_workspace2")
 load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
+load("//third_party/dlpack:workspace.bzl", dlpack = "repo")
 
 # Import third party repository rules. See go/tfbr-thirdparty.
-load("//third_party/dlpack:workspace.bzl", dlpack = "repo")
+load("//third_party/FP16:workspace.bzl", FP16 = "repo")
 load("//third_party/gloo:workspace.bzl", gloo = "repo")
 load("//third_party/mpitrampoline:workspace.bzl", mpitrampoline = "repo")
 load("//third_party/nanobind:workspace.bzl", nanobind = "repo")
 load("//third_party/robin_map:workspace.bzl", robin_map = "repo")
+load("//third_party/shardy:workspace.bzl", shardy = "repo")
 load("//third_party/stablehlo:workspace.bzl", stablehlo = "repo")
 load("//third_party/triton:workspace.bzl", triton = "repo")
+load("//third_party/uv:workspace.bzl", uv = "repo")
 
 def _initialize_third_party():
     """ Load third party repositories.  See above load() statements. """
+    FP16()
     dlpack()
     gloo()
     mpitrampoline()
     nanobind()
     robin_map()
+    shardy()
     stablehlo()
     triton()
+    uv()
 
 # Define all external repositories required by TensorFlow
 def _tf_repositories():
@@ -35,6 +41,43 @@ def _tf_repositories():
     # b) get the sha256 hash of the commit by running:
     #    curl -L <url> | sha256sum
     # and update the sha256 with the result.
+
+    # LINT.IfChange
+    tf_http_archive(
+        name = "XNNPACK",
+        sha256 = "face04056299ca22e2dbbf122a27aef289443dc7b1ad7e33a52714d6acc084eb",
+        strip_prefix = "XNNPACK-e55b3998cadb320188759aaada27328cbacc3253",
+        urls = tf_mirror_urls("https://github.com/google/XNNPACK/archive/e55b3998cadb320188759aaada27328cbacc3253.zip"),
+    )
+    # LINT.ThenChange(//tensorflow/lite/tools/cmake/modules/xnnpack.cmake)
+
+    tf_http_archive(
+        name = "KleidiAI",
+        sha256 = "f3ea4fce53f3b31076958dbff229f0048dae15bf454929673c78292a56279d52",
+        strip_prefix = "kleidiai-847ebd19d0192528659b0a0fa2c6057eed674c6a",
+        urls = tf_mirror_urls("https://gitlab.arm.com/kleidi/kleidiai/-/archive/847ebd19d0192528659b0a0fa2c6057eed674c6a/kleidiai-40a926833857fb64786e02f97703e42b1537cb57.zip"),
+    )
+
+    tf_http_archive(
+        name = "FXdiv",
+        sha256 = "3d7b0e9c4c658a84376a1086126be02f9b7f753caa95e009d9ac38d11da444db",
+        strip_prefix = "FXdiv-63058eff77e11aa15bf531df5dd34395ec3017c8",
+        urls = tf_mirror_urls("https://github.com/Maratyszcza/FXdiv/archive/63058eff77e11aa15bf531df5dd34395ec3017c8.zip"),
+    )
+
+    tf_http_archive(
+        name = "cpuinfo",
+        sha256 = "52e0ffd7998d8cb3a927d8a6e1145763744d866d2be09c4eccea27fc157b6bb0",
+        strip_prefix = "cpuinfo-cebb0933058d7f181c979afd50601dc311e1bf8c",
+        urls = tf_mirror_urls("https://github.com/pytorch/cpuinfo/archive/cebb0933058d7f181c979afd50601dc311e1bf8c.zip"),
+    )
+
+    tf_http_archive(
+        name = "pthreadpool",
+        sha256 = "cb668c32d6e05099492cc7ea19168e2dad0d1dcc4cbaa0e34fd4b38d39f0e03e",
+        strip_prefix = "pthreadpool-f94ab76fe99754960035d520dce28e15b647e8cf",
+        urls = tf_mirror_urls("https://github.com/Maratyszcza/pthreadpool/archive/f94ab76fe99754960035d520dce28e15b647e8cf.zip"),
+    )
 
     tf_http_archive(
         name = "jsoncpp_git",
@@ -48,9 +91,9 @@ def _tf_repositories():
         name = "cudnn_frontend_archive",
         build_file = "//third_party:cudnn_frontend.BUILD",
         patch_file = ["//third_party:cudnn_frontend_header_fix.patch"],
-        sha256 = "5727ed189a17fe888f1729ba09b2afd8df3e71192a27e9fa87e14a60f7b9d367",
-        strip_prefix = "cudnn-frontend-1.3.0",
-        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.3.0.zip"),
+        sha256 = "59fb63e273c845cb85996d536194a7e2b22012810983cbbf06c4a46b09d17a32",
+        strip_prefix = "cudnn-frontend-1.10.0",
+        urls = tf_mirror_urls("https://github.com/NVIDIA/cudnn-frontend/archive/refs/tags/v1.10.0.zip"),
     )
 
     tf_http_archive(

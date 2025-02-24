@@ -24,7 +24,6 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -33,27 +32,30 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "xla/hlo/analysis/hlo_alias_analysis.h"
+#include "xla/hlo/analysis/hlo_dataflow_analysis.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/hlo/utils/hlo_live_range.h"
+#include "xla/layout.h"
 #include "xla/service/buffer_value.h"
 #include "xla/service/heap_simulator/heap_simulator.h"
-#include "xla/service/hlo_alias_analysis.h"
+#include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_buffer.h"
-#include "xla/service/hlo_dataflow_analysis.h"
 #include "xla/service/hlo_value.h"
 #include "xla/service/memory_space_assignment/algorithm.h"
 #include "xla/service/memory_space_assignment/allocation.h"
-#include "xla/service/memory_space_assignment/cost_analysis.h"
 #include "xla/service/memory_space_assignment/memory_space_assignment.pb.h"
 #include "xla/service/memory_space_assignment/options.h"
+#include "xla/service/memory_space_assignment/simulator.h"
 #include "xla/service/memory_space_assignment/slice.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -216,8 +218,10 @@ void ProcessBuffersProducedInAlternateMemory(
   for (auto& [_, eviction] : evictions_map) {
     MakeEvictionImmediate(eviction);
   }
-  VLOG(2) << "AllocationSequence after making spills immediate spills\n";
-  XLA_LOG_LINES(2, AllocationSequenceToString(allocations, true));
+  if (VLOG_IS_ON(2)) {
+    LOG(INFO) << "AllocationSequence after making spills immediate spills\n";
+    XLA_LOG_LINES(INFO, AllocationSequenceToString(allocations, true));
+  }
   // Process all buffers produced in the alternate memory:
   // 1. Make the buffer short lived.
   // 2. Service immediate use if any.
@@ -261,27 +265,32 @@ void ProcessBuffersProducedInAlternateMemory(
 
 void TransformAllocationSequenceToSpill(AllocationSequence& allocations,
                                         const HloLiveRange& hlo_live_range) {
-  VLOG(2) << "InstructionSchedule before transform\n";
-  XLA_LOG_LINES(2, InstructionScheduleToString(hlo_live_range));
-  VLOG(2) << "AllocationSequence before transform\n";
-  XLA_LOG_LINES(2, AllocationSequenceToString(allocations, true));
+  if (VLOG_IS_ON(2)) {
+    LOG(INFO) << "InstructionSchedule before transform\n";
+    XLA_LOG_LINES(INFO, InstructionScheduleToString(hlo_live_range));
+    LOG(INFO) << "AllocationSequence before transform\n";
+    XLA_LOG_LINES(INFO, AllocationSequenceToString(allocations, true));
+  }
   ProcessPrefetchesToAlternateMemory(allocations, hlo_live_range);
-  VLOG(2) << "AllocationSequence after processing prefetches\n";
-  XLA_LOG_LINES(2, AllocationSequenceToString(allocations, true));
+  if (VLOG_IS_ON(2)) {
+    LOG(INFO) << "AllocationSequence after processing prefetches\n";
+    XLA_LOG_LINES(INFO, AllocationSequenceToString(allocations, true));
+  }
   ProcessBuffersProducedInAlternateMemory(allocations, hlo_live_range);
-  VLOG(2) << "AllocationSequence after processing buffers produced in kAlt\n";
-  XLA_LOG_LINES(2, AllocationSequenceToString(allocations, true));
+  if (VLOG_IS_ON(2)) {
+    VLOG(2) << "AllocationSequence after processing buffers produced in kAlt\n";
+    XLA_LOG_LINES(INFO, AllocationSequenceToString(allocations, true));
+  }
   SortAllocationSequence(allocations);
 }
 
 }  // namespace
 
 absl::StatusOr<MemorySpaceAssignment::AsyncCopyStats>
-MemorySpaceAssignment::CalculateAsyncCopyStats() const {
+MemorySpaceAssignment::CalculateAsyncCopyStats(
+    const HloDataflowAnalysis& dataflow_analysis) const {
   AsyncCopyStats stats;
   int64_t current_copies = 0;
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<HloDataflowAnalysis> dataflow_analysis,
-                      HloDataflowAnalysis::Run(*module_));
   for (const HloComputation* computation :
        module_->MakeNonfusionComputations()) {
     for (HloInstruction* instruction : computation->instructions()) {
@@ -296,7 +305,7 @@ MemorySpaceAssignment::CalculateAsyncCopyStats() const {
                       HloOpcode::kSlice)) {
         current_copies--;
         int64_t size =
-            options_.size_fn(dataflow_analysis->GetUniqueValueAt(instruction));
+            options_.size_fn(dataflow_analysis.GetUniqueValueAt(instruction));
         if (instruction->shape().layout().memory_space() ==
             options_.alternate_memory_space) {
           ++stats.num_prefetches;
@@ -326,9 +335,11 @@ MemorySpaceAssignment::Run(HloModule* module,
                            const HloAliasAnalysis& alias_analysis,
                            const Options& options) {
   CHECK(module->has_schedule());
-  VLOG(3) << "Module before memory space assignment: ";
-  XLA_VLOG_LINES(3, module->ToString());
-  VLOG(3) << "Schedule: " << module->schedule().ToString();
+  if (VLOG_IS_ON(3)) {
+    LOG(INFO) << "Module before memory space assignment: ";
+    XLA_LOG_LINES(INFO, module->ToString());
+    LOG(INFO) << "Schedule: " << module->schedule().ToString();
+  }
   MemorySpaceAssignment memory_space_assignment(module, options,
                                                 hlo_live_range);
 
@@ -336,39 +347,113 @@ MemorySpaceAssignment::Run(HloModule* module,
                                                           alias_analysis);
 }
 
+absl::Status MemorySpaceAssignment::VerifyAllocations() const {
+  BufferIntervalTree interval_tree;
+  // Checks the chunks that overlap with a given allocation in time do not
+  // overlap with the allocation's chunk in the memory range. If they do, we
+  // throw an error, otherwise we add the allocation's chunk to the interval
+  // tree and return an OK status.
+  auto add_allocation_and_verify =
+      [&](const Allocation* allocation) -> absl::Status {
+    for (const HeapSimulator::Chunk& overlapping_chunk :
+         interval_tree.ChunksOverlappingInTime(allocation->start_time(),
+                                               allocation->end_time() - 1)) {
+      CHECK(!allocation->chunk().OverlapsWith(overlapping_chunk))
+          << "Chunks are overlapping at Allocation level (before fixing the "
+             "schedule): "
+          << allocation->ToString()
+          << " overlaps with allocated chunk: " << overlapping_chunk.ToString();
+    }
+    interval_tree.Add(allocation->start_time(), allocation->end_time() - 1,
+                      allocation->chunk());
+    return absl::OkStatus();
+  };
+  // Verify that all alternate memory allocations are free of overlapping
+  // Allocations in time and space, and add them to interval_tree one by one.
+  for (const auto& allocation : allocations_) {
+    if (allocation->memory_space() == MemorySpace::kAlternate) {
+      TF_RETURN_IF_ERROR(add_allocation_and_verify(allocation.get()));
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::unique_ptr<PresetAssignments>>
 MemorySpaceAssignment::RunMemorySpaceAssignment(
     const HloLiveRange& hlo_live_range,
     const HloAliasAnalysis& alias_analysis) {
+  bool splitting_enabled = options_.determine_split_dimension_fn != nullptr &&
+                           options_.init_split_tree_fn != nullptr &&
+                           options_.shape_size_fn != nullptr;
+  if (splitting_enabled) {
+    CHECK_EQ(options_.sliced_prefetch_options.max_slices(), 0)
+        << "TODO(b/167392593): Support sliced prefetches for split shapes.";
+    CHECK(!options_.enable_window_prefetch)
+        << "TODO(b/167392593): Support split shapes for window "
+           "prefetches.";
+  }
   TF_RETURN_IF_ERROR(FindAllocationSequence(hlo_live_range, alias_analysis));
 
+  std::optional<RuntimeSimulator> runtime_simulator = std::nullopt;
   if (options_.cost_analysis) {
-    float estimated_time =
-        ComputeEstimatedElapsedTime(hlo_live_range, allocations_);
-    VLOG(1) << "Estimated elapsed time (sec): " << estimated_time;
+    runtime_simulator.emplace(options_.cost_analysis,
+                              options_.alternate_memory_space);
+    if (VLOG_IS_ON(1)) {
+      float estimated_time =
+          runtime_simulator->SimulateElapsedTimeWithoutAsyncCopyLikes(
+              hlo_live_range, allocations_);
+      LOG(INFO) << "Estimated elapsed time without async copies (sec): "
+                << estimated_time;
+    }
   }
 
   TF_RETURN_IF_ERROR(Process(hlo_live_range));
+  if (options_.verify) {
+    TF_RETURN_IF_ERROR(VerifyAllocations());
+  }
+  // DEBUG_LOG_ALLOCATIONS_AT
+  //
+  // Uncomment the following to log the alternate memory allocations that MSA
+  // made at a given schedule time.
+  //
+  // AllocationSequenceDebugging::LogAltMemAllocationsAt(
+  //     allocations_, /*time*/1);
   ScheduleAsynchronousCopies();
   TF_RETURN_IF_ERROR(SimplifyGraph());
   TF_RETURN_IF_ERROR(FixSchedule());
-  TF_RETURN_IF_ERROR(ExportAndColorBuffers());
-
-  VLOG(3) << "Module after memory space assignment: ";
-  XLA_VLOG_LINES(3, module_->ToString());
+  TF_ASSIGN_OR_RETURN(auto alias, HloAliasAnalysis::Run(module_));
+  TF_RETURN_IF_ERROR(ExportAndColorBuffers(*alias));
+  std::vector<int64_t> alt_mem_bytes_occupied;
+  // alt_mem_bytes_occupied is used for logging in the RuntimeSimulator below.
+  // We only populate it in VerifyAndExportHeapSimulatorTrace if the
+  // RuntimeSimulator is present.
+  TF_RETURN_IF_ERROR(VerifyAndExportHeapSimulatorTrace(
+      *alias,
+      runtime_simulator.has_value() ? &alt_mem_bytes_occupied : nullptr));
+  if (VLOG_IS_ON(2) && runtime_simulator.has_value()) {
+    float estimated_time = runtime_simulator->SimulateElapsedTime(
+        module_, allocations_, &alt_mem_bytes_occupied);
+    LOG(INFO) << "Estimated elapsed time with async copies (sec): "
+              << estimated_time;
+  }
+  if (VLOG_IS_ON(3)) {
+    LOG(INFO) << "Module after memory space assignment: ";
+    XLA_LOG_LINES(INFO, module_->ToString());
+  }
   TF_CHECK_OK(module_->schedule().Verify());
-  TF_ASSIGN_OR_RETURN(AsyncCopyStats stats, CalculateAsyncCopyStats());
-  VLOG(1) << "Maximum number of outstanding async copies/slices: "
-          << stats.max_outstanding_async_copies;
-  VLOG(1) << "Number of prefetches: " << stats.num_prefetches
-          << ", in bytes: " << stats.prefetch_bytes;
-  VLOG(1) << "Number of sliced prefetches: " << stats.num_sliced_prefetches
-          << ", consuming number of slices: "
-          << stats.num_sliced_prefetch_slices;
-  VLOG(1) << "Number of evictions: " << stats.num_evictions
-          << ", in bytes: " << stats.eviction_bytes;
-
-  TF_RETURN_IF_ERROR(VerifyAndExportHeapSimulatorTrace());
+  if (VLOG_IS_ON(1)) {
+    TF_ASSIGN_OR_RETURN(AsyncCopyStats stats,
+                        CalculateAsyncCopyStats(alias->dataflow_analysis()));
+    LOG(INFO) << "Maximum number of outstanding async copies/slices: "
+              << stats.max_outstanding_async_copies;
+    LOG(INFO) << "Number of prefetches: " << stats.num_prefetches
+              << ", in bytes: " << stats.prefetch_bytes;
+    LOG(INFO) << "Number of sliced prefetches: " << stats.num_sliced_prefetches
+              << ", consuming number of slices: "
+              << stats.num_sliced_prefetch_slices;
+    LOG(INFO) << "Number of evictions: " << stats.num_evictions
+              << ", in bytes: " << stats.eviction_bytes;
+  }
 
   return std::move(preset_assignments_);
 }
@@ -388,58 +473,6 @@ absl::Status MemorySpaceAssignment::FindAllocationSequence(
                                         heap_simulator_options)
                          .status());
   return absl::OkStatus();
-}
-
-float MemorySpaceAssignment::ComputeEstimatedElapsedTime(
-    const HloLiveRange& hlo_live_range, const AllocationSequence& allocations) {
-  absl::flat_hash_map<const HloInstruction*, std::vector<ShapeIndex>>
-      outputs_in_alternate_memory_map;
-  absl::flat_hash_map<const HloInstruction*,
-                      std::vector<std::pair<int64_t, ShapeIndex>>>
-      operands_in_alternate_memory_map;
-
-  for (auto& allocation : allocations) {
-    if (!allocation->is_copy_allocation()) {
-      if (allocation->memory_space() == MemorySpace::kAlternate) {
-        const HloInstruction* defining_instruction =
-            allocation->defining_position().instruction;
-        outputs_in_alternate_memory_map[defining_instruction].push_back(
-            allocation->defining_position().index);
-      }
-    }
-    for (auto& hlo_use : allocation->uses()) {
-      const HloInstruction* use_instruction = hlo_use.instruction;
-      operands_in_alternate_memory_map[use_instruction].push_back(
-          std::make_pair(hlo_use.operand_number, hlo_use.operand_index));
-    }
-  }
-
-  const auto& instruction_sequence =
-      hlo_live_range.flattened_instruction_sequence().instructions();
-  float total_elapsed = 0.0;
-  for (const HloInstruction* instruction : instruction_sequence) {
-    std::vector<ShapeIndex> outputs_in_alternate_memory;
-    auto output_it = outputs_in_alternate_memory_map.find(instruction);
-    if (output_it != outputs_in_alternate_memory_map.end()) {
-      outputs_in_alternate_memory = output_it->second;
-    }
-    std::vector<std::pair<int64_t, ShapeIndex>> operands_in_alternate_memory;
-    auto operand_it = operands_in_alternate_memory_map.find(instruction);
-    if (operand_it != operands_in_alternate_memory_map.end()) {
-      operands_in_alternate_memory = operand_it->second;
-    }
-    float instruction_elapsed =
-        options_.cost_analysis->GetInstructionElapsedInAlternateMemory(
-            *instruction, operands_in_alternate_memory,
-            outputs_in_alternate_memory);
-    float while_nest_multiplier =
-        options_.cost_analysis->GetWhileNestMultiplier(
-            options_.cost_analysis->CalculateComputationNestLevel(
-                instruction,
-                /*while_only=*/true));
-    total_elapsed += while_nest_multiplier * instruction_elapsed;
-  }
-  return total_elapsed;
 }
 
 absl::Status MemorySpaceAssignment::Process(
@@ -463,7 +496,7 @@ absl::Status MemorySpaceAssignment::Process(
       VLOG(3) << "Allocation not needed.";
       continue;
     }
-    TF_RETURN_IF_ERROR(allocation->Process());
+    TF_RETURN_IF_ERROR(allocation->Process(options_.bitcast_split_fn));
     // Add the offset and size of the allocation in the alternate memory to
     // the output map.
     if (allocation->is_scoped_allocation()) {
@@ -487,7 +520,6 @@ absl::Status MemorySpaceAssignment::Process(
         CHECK(
             !sliced_copy_allocation.cross_program_prefetch_index().has_value());
       }
-
       alternate_memory_assignments_.emplace_back(
           allocation->defining_position(), allocation->chunk());
       alternate_memory_size_ =
@@ -504,24 +536,33 @@ absl::Status MemorySpaceAssignment::Process(
   // Post-process allocations. This is only used for parent allocations where we
   // update the body root with a reference to the buffer in default memory
   // space.
+  absl::flat_hash_set<HloPosition> seen_pinned_positions;
   for (auto& allocation : allocations_) {
     if (needed_allocations.contains(allocation.get())) {
       VLOG(3) << "Post-Processing: " << allocation->ToString();
       TF_RETURN_IF_ERROR(allocation->PostProcess());
+      if (allocation->is_pinned_allocation() &&
+          !allocation->is_scoped_allocation()) {
+        auto [it, inserted] =
+            seen_pinned_positions.insert(allocation->defining_position());
+        TF_RET_CHECK(inserted)
+            << "Multiple pinned allocations defined for position "
+            << allocation->defining_position().ToString();
+      }
     }
   }
   return absl::OkStatus();
 }
 
-absl::Status MemorySpaceAssignment::ExportAndColorBuffers() {
+absl::Status MemorySpaceAssignment::ExportAndColorBuffers(
+    const HloAliasAnalysis& alias_analysis) {
   VLOG(1) << "Exporting buffers...";
-  TF_ASSIGN_OR_RETURN(auto alias_analysis, HloAliasAnalysis::Run(module_));
   absl::flat_hash_map<int64_t, int64_t> seen_buffer_offsets;
   VLOG(3) << "Exported alternate memory allocations:";
   for (const auto& position_and_chunk : alternate_memory_assignments_) {
     const HloPosition& defining_position = position_and_chunk.first;
     const HeapSimulator::Chunk& chunk = position_and_chunk.second;
-    const HloBuffer& buffer = alias_analysis->GetUniqueBufferAt(
+    const HloBuffer& buffer = alias_analysis.GetUniqueBufferAt(
         defining_position.instruction, defining_position.index);
     auto seen_buffer_offset_it = seen_buffer_offsets.find(buffer.id());
     if (seen_buffer_offset_it != seen_buffer_offsets.end()) {
@@ -563,7 +604,7 @@ absl::Status MemorySpaceAssignment::ExportAndColorBuffers() {
   for (const auto& defining_position_and_chunk :
        preset_assignments_->chunks()) {
     const HloPosition& defining_position = defining_position_and_chunk.first;
-    for (auto& buffer : alias_analysis->ComputeBuffersAt(
+    for (auto& buffer : alias_analysis.ComputeBuffersAt(
              defining_position.instruction, defining_position.index)) {
       for (auto& value : buffer->values()) {
         for (auto& position : value->positions()) {
@@ -960,7 +1001,7 @@ absl::Status MemorySpaceAssignment::FixSchedule() {
         for (HloInstruction* new_instruction : insts_before_iter->second) {
           if (new_instruction->parent() == computation) {
             VLOG(4) << "before " << instruction_index << ": "
-                    << new_instruction->name();
+                    << new_instruction->ToString();
             TF_RETURN_IF_ERROR(InsertInstructionAndEnsureOperandsInserted(
                 new_instruction, &new_sequence, &inserted_instructions));
           }
@@ -986,7 +1027,7 @@ absl::Status MemorySpaceAssignment::FixSchedule() {
             instruction->opcode() != HloOpcode::kTuple &&
             !inserted_instructions.contains(instruction)) {
           VLOG(4) << "inst " << instruction_index << ": "
-                  << instruction->name();
+                  << instruction->ToString();
           TF_RETURN_IF_ERROR(InsertInstructionAndEnsureOperandsInserted(
               instruction, &new_sequence, &inserted_instructions));
         }
@@ -997,7 +1038,7 @@ absl::Status MemorySpaceAssignment::FixSchedule() {
         for (HloInstruction* new_instruction : insts_after_iter->second) {
           if (new_instruction->parent() == computation) {
             VLOG(4) << "after " << instruction_index << ": "
-                    << new_instruction->name();
+                    << new_instruction->ToString();
             TF_RETURN_IF_ERROR(InsertInstructionAndEnsureOperandsInserted(
                 new_instruction, &new_sequence, &inserted_instructions));
           }
@@ -1022,12 +1063,12 @@ absl::Status MemorySpaceAssignment::FixSchedule() {
   return absl::OkStatus();
 }
 
-absl::Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace() {
+absl::Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace(
+    const HloAliasAnalysis& alias_analysis,
+    std::vector<int64_t>* alt_mem_bytes_occupied) {
   VLOG(1) << "Verifying...";
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<HloAliasAnalysis> alias_analysis,
-                      HloAliasAnalysis::Run(module_));
   TF_ASSIGN_OR_RETURN(std::unique_ptr<HloLiveRange> hlo_live_range,
-                      HloLiveRange::Run(module_->schedule(), *alias_analysis,
+                      HloLiveRange::Run(module_->schedule(), alias_analysis,
                                         module_->entry_computation()));
 
   BufferIntervalTree interval_tree;
@@ -1093,7 +1134,7 @@ absl::Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace() {
     const HloPosition& position = position_and_chunk.first;
     const HeapSimulator::Chunk& chunk = position_and_chunk.second;
     const HloBuffer& buffer =
-        alias_analysis->GetUniqueBufferAt(position.instruction, position.index);
+        alias_analysis.GetUniqueBufferAt(position.instruction, position.index);
     CHECK(!seen_buffers.contains(buffer.id()))
         << "Multiple preset assignments for the same buffer: "
         << buffer.ToString() << ", pos: " << position.ToString()
@@ -1198,6 +1239,12 @@ absl::Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace() {
   int64_t max_memory_usage = 0;
   int64_t prev_time = 0;
   int64_t prev_memory_usage = 0;
+  if (alt_mem_bytes_occupied) {
+    // Populate alt_mem_bytes_occupied with -1, for each instruction.
+    alt_mem_bytes_occupied->resize(
+        hlo_live_range->flattened_instruction_sequence().instructions().size(),
+        -1);
+  }
   for (const auto& event : events) {
     int64_t time;
     bool is_free;
@@ -1234,8 +1281,23 @@ absl::Status MemorySpaceAssignment::VerifyAndExportHeapSimulatorTrace() {
     }
     prev_memory_usage = std::max(prev_memory_usage, memory_usage);
     max_memory_usage = std::max(max_memory_usage, memory_usage);
-    VLOG(4) << "Memory usage: " << memory_usage << " at time: " << time;
+    if (alt_mem_bytes_occupied) {
+      // Update known alt mem usage.
+      (*alt_mem_bytes_occupied)[time] = memory_usage;
+    }
   }
+  if (alt_mem_bytes_occupied) {
+    // Replace the -1s in alt_mem_bytes_occupied with the previous alt memory
+    // usage.
+    int64_t prev_bytes = 0;
+    for (int64_t i = 0; i < alt_mem_bytes_occupied->size(); ++i) {
+      if ((*alt_mem_bytes_occupied)[i] == -1) {
+        (*alt_mem_bytes_occupied)[i] = prev_bytes;
+      }
+      prev_bytes = (*alt_mem_bytes_occupied)[i];
+    }
+  }
+
   VLOG(1) << "Max memory usage ignoring fragmentation: " << max_memory_usage;
 
   return absl::OkStatus();

@@ -13,14 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <algorithm>
+#include <cstddef>
+#include <limits>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "absl/strings/str_cat.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tooling_util.h"

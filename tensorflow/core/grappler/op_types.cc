@@ -15,16 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/op_types.h"
 
-#include <algorithm>
-#include <cctype>
-
-#include "absl/strings/match.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/op.h"
-#include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/grappler/utils.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
@@ -34,36 +27,8 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 
-namespace {
-template <typename T>
-bool AllValuesAre(const TensorProto& proto, const T& value) {
-  Tensor tensor;
-  if (!tensor.FromProto(proto)) {
-    return false;
-  }
-  auto values = tensor.flat<T>();
-  for (int i = 0; i < tensor.NumElements(); ++i) {
-    if (values(i) != value) {
-      return false;
-    }
-  }
-  return true;
-}
-
-#define IS_VALUE_CASE(DTYPE, VALUE)                   \
-  case DTYPE:                                         \
-    return AllValuesAre<EnumToDataType<DTYPE>::Type>( \
-        tensor, EnumToDataType<DTYPE>::Type(VALUE))
-
-#define IS_ONES_CASE(TYPE) IS_VALUE_CASE(TYPE, 1)
-#define IS_ZEROS_CASE(TYPE) IS_VALUE_CASE(TYPE, 0)
-
-}  // namespace
-
-bool IsAddV2(const NodeDef& node) { return node.op() == "AddV2"; }
-
 bool IsAdd(const NodeDef& node) {
-  if (IsAddV2(node)) {
+  if (node.op() == "AddV2") {
     return true;
   }
   if (node.op() == "Add") {
@@ -479,7 +444,7 @@ bool IsQuantizedMatMul(const NodeDef& node) {
 }
 
 bool IsQueue(const NodeDef& node) {
-  return str_util::EndsWith(node.op(), "QueueV2");
+  return absl::EndsWith(node.op(), "QueueV2");
 }
 
 bool IsRandomShuffle(const NodeDef& node) {
@@ -717,7 +682,7 @@ bool IsPersistent(const NodeDef& node) {
 
 bool HasRefInput(const NodeDef& node) {
   const OpDef* op_def;
-  Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
+  absl::Status status = OpRegistry::Global()->LookUpOpDef(node.op(), &op_def);
   if (!status.ok()) {
     return false;
   }
@@ -737,10 +702,10 @@ bool IsDataset(const NodeDef& node) {
          op == "DatasetToSingleElement" || op == "ReduceDataset";
 }
 
-bool IsStateful(const NodeDef node, const OpRegistryInterface* op_registry) {
+bool IsStateful(const NodeDef& node, const OpRegistryInterface* op_registry) {
   const OpDef* op_def = nullptr;
   const string& op_name = node.op();
-  Status status = op_registry->LookUpOpDef(op_name, &op_def);
+  absl::Status status = op_registry->LookUpOpDef(op_name, &op_def);
   if (!status.ok()) {
     LOG(WARNING) << "Failed to lookup OpDef for " << op_name
                  << ". Error: " << status.message();
@@ -749,7 +714,7 @@ bool IsStateful(const NodeDef node, const OpRegistryInterface* op_registry) {
   return op_def->is_stateful();
 }
 
-bool IsStateful(const NodeDef node) {
+bool IsStateful(const NodeDef& node) {
   return IsStateful(node, OpRegistry::Global());
 }
 
@@ -761,7 +726,7 @@ bool IsFreeOfSideEffect(const NodeDef& node,
   }
   const OpDef* op_def = nullptr;
   const string& op_name = node.op();
-  Status status = op_registry->LookUpOpDef(op_name, &op_def);
+  absl::Status status = op_registry->LookUpOpDef(op_name, &op_def);
   if (!status.ok()) {
     return false;
   }
@@ -1032,74 +997,6 @@ bool NeverForwardsInputs(const NodeDef& node) {
 }
 
 bool IsXlaLaunch(const NodeDef& node) { return node.op() == "XlaLaunch"; }
-
-bool IsZeroTensor(const TensorProto& tensor, const DataType& dtype) {
-  switch (dtype) {
-    IS_ZEROS_CASE(DT_BOOL);
-    IS_ZEROS_CASE(DT_HALF);
-    IS_ZEROS_CASE(DT_BFLOAT16);
-    IS_ZEROS_CASE(DT_FLOAT);
-    IS_ZEROS_CASE(DT_DOUBLE);
-    IS_ZEROS_CASE(DT_COMPLEX64);
-    IS_ZEROS_CASE(DT_COMPLEX128);
-    IS_ZEROS_CASE(DT_UINT8);
-    IS_ZEROS_CASE(DT_INT8);
-    IS_ZEROS_CASE(DT_UINT16);
-    IS_ZEROS_CASE(DT_INT16);
-    IS_ZEROS_CASE(DT_INT32);
-    IS_ZEROS_CASE(DT_INT64);
-    IS_ZEROS_CASE(DT_QINT32);
-    IS_ZEROS_CASE(DT_QINT16);
-    IS_ZEROS_CASE(DT_QUINT16);
-    IS_ZEROS_CASE(DT_QINT8);
-    IS_ZEROS_CASE(DT_QUINT8);
-    default:
-      VLOG(1) << "Unsupported type " << DataTypeString(dtype);
-      return false;
-  }
-  return false;
-}
-
-bool IsZerosNode(const NodeDef& node) {
-  if (!IsConstant(node)) return false;
-  if (node.attr().count("dtype") == 0) return false;
-  return IsZeroTensor(node.attr().at("value").tensor(),
-                      node.attr().at("dtype").type());
-}
-
-bool IsOneTensor(const TensorProto& tensor, const DataType& dtype) {
-  switch (dtype) {
-    IS_ONES_CASE(DT_BOOL);
-    IS_ONES_CASE(DT_HALF);
-    IS_ONES_CASE(DT_BFLOAT16);
-    IS_ONES_CASE(DT_FLOAT);
-    IS_ONES_CASE(DT_DOUBLE);
-    IS_ONES_CASE(DT_COMPLEX64);
-    IS_ONES_CASE(DT_COMPLEX128);
-    IS_ONES_CASE(DT_UINT8);
-    IS_ONES_CASE(DT_INT8);
-    IS_ONES_CASE(DT_UINT16);
-    IS_ONES_CASE(DT_INT16);
-    IS_ONES_CASE(DT_INT32);
-    IS_ONES_CASE(DT_INT64);
-    IS_ONES_CASE(DT_QINT32);
-    IS_ONES_CASE(DT_QINT16);
-    IS_ONES_CASE(DT_QUINT16);
-    IS_ONES_CASE(DT_QINT8);
-    IS_ONES_CASE(DT_QUINT8);
-    default:
-      VLOG(1) << "Unsupported type " << DataTypeString(dtype);
-      return false;
-  }
-  return false;
-}
-
-bool IsOnesNode(const NodeDef& node) {
-  if (!IsConstant(node)) return false;
-  if (node.attr().count("dtype") == 0) return false;
-  const auto dtype = node.attr().at("dtype").type();
-  return IsOneTensor(node.attr().at("value").tensor(), dtype);
-}
 
 }  // namespace grappler
 }  // end namespace tensorflow
