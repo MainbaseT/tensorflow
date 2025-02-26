@@ -21,14 +21,13 @@ limitations under the License.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "mlir/IR/MLIRContext.h"
+#include "xla/hlo/analysis/indexing_analysis.h"
+#include "xla/hlo/analysis/indexing_map.h"
 #include "xla/hlo/ir/hlo_instruction.h"
-#include "xla/service/gpu/hlo_traversal.h"
-#include "xla/service/gpu/model/indexing_analysis.h"
-#include "xla/service/gpu/model/indexing_map.h"
+#include "xla/hlo/utils/hlo_traversal.h"
 #include "xla/service/gpu/model/symbolic_tile.h"
 #include "xla/tests/hlo_test_base.h"
-#include "xla/tests/verified_hlo_module.h"
 #include "tsl/platform/statusor.h"
 
 namespace xla {
@@ -74,7 +73,8 @@ ENTRY main {
   std::optional<SymbolicTile> p0_symbolic_tile =
       SymbolicTile::FromIndexingMap(p0_indexing);
   ASSERT_TRUE(p0_symbolic_tile.has_value());
-  SymbolicTiledHloInstruction tiled_p0(p0, p0_indexing, *p0_symbolic_tile);
+  SymbolicTiledHloInstruction tiled_p0(p0, p0_indexing);
+  tiled_p0.set_symbolic_tile(*p0_symbolic_tile);
   ASSERT_TRUE(p0_symbolic_tile.has_value());
 
   IndexingMap p1_indexing =
@@ -82,13 +82,15 @@ ENTRY main {
   std::optional<SymbolicTile> p1_symbolic_tile =
       SymbolicTile::FromIndexingMap(p1_indexing);
   ASSERT_TRUE(p1_symbolic_tile.has_value());
-  SymbolicTiledHloInstruction tiled_p1(p1, p1_indexing, *p1_symbolic_tile);
+  SymbolicTiledHloInstruction tiled_p1(p1, p1_indexing);
+  tiled_p1.set_symbolic_tile(*p1_symbolic_tile);
 
   std::vector<int64_t> output_tile_sizes = {8, 4};
 
-  auto p0_tile_sizes = tiled_p0.TileSizes(output_tile_sizes);
-  EXPECT_THAT(tiled_p0.TileSizes(output_tile_sizes), ElementsAre(4, 8));
-  EXPECT_THAT(tiled_p1.TileSizes(output_tile_sizes), ElementsAre(8, 4));
+  EXPECT_THAT(EvaluateTileSizes(tiled_p0.symbolic_tile(), output_tile_sizes),
+              ElementsAre(4, 8));
+  EXPECT_THAT(EvaluateTileSizes(tiled_p1.symbolic_tile(), output_tile_sizes),
+              ElementsAre(8, 4));
 }
 
 }  // namespace

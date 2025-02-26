@@ -25,9 +25,9 @@ limitations under the License.
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
 #include "xla/printer.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/logging.h"  // IWYU pragma: keep
 
 namespace xla {
 
@@ -161,6 +161,9 @@ class Layout {
 
   // Constructs a dense layout with the given minor-to-major order.
   explicit Layout(absl::Span<const int64_t> minor_to_major);
+
+  explicit Layout(absl::Span<const int64_t> minor_to_major,
+                  absl::Span<const Tile> tiles, int64_t element_size_in_bits);
 
   // Constructs a dense tiled layout with the given minor-to-major order, dim
   // level types, and tiles.

@@ -47,9 +47,12 @@ from setuptools.dist import Distribution
 # For pip, we will remove all '-' characters from this string, and use the
 # result for pip.
 # Also update tensorflow/tensorflow.bzl and
-# tensorflow/core/public/version.h
-_VERSION = '2.17.0'
+# tensorflow/core/public/release_version.h
+_VERSION = '2.20.0'
 
+# Update this version when a new libtpu stable version is released.
+LATEST_RELEASE_LIBTPU_VERSION = '0.0.9'
+NEXT_LIBTPU_VERSION = '0.0.10'
 
 # We use the same setup.py for all tensorflow_* packages and for the nightly
 # equivalents (tf_nightly_*). The package is controlled from the argument line
@@ -81,17 +84,12 @@ REQUIRED_PACKAGES = [
     'flatbuffers >= 24.3.25',
     'gast >=0.2.1,!=0.5.0,!=0.5.1,!=0.5.2',
     'google_pasta >= 0.1.1',
-    'h5py >= 3.10.0',
     'libclang >= 13.0.0',
-    'ml_dtypes ~= 0.3.1',
-    # TODO(b/304751256): Adjust the numpy pin to a single version, when ready
-    'numpy >= 1.23.5, < 2.0.0 ; python_version <= "3.11"',
-    'numpy >= 1.26.0, < 2.0.0 ; python_version >= "3.12"',
     'opt_einsum >= 2.3.2',
     'packaging',
     # pylint:disable=line-too-long
     (
-        'protobuf>=3.20.3,<5.0.0dev,!=4.21.0,!=4.21.1,!=4.21.2,!=4.21.3,!=4.21.4,!=4.21.5'
+        'protobuf>=3.20.3,<6.0.0dev,!=4.21.0,!=4.21.1,!=4.21.2,!=4.21.3,!=4.21.4,!=4.21.5'
     ),
     'requests >= 2.21.0, < 3',
     'setuptools',
@@ -99,8 +97,6 @@ REQUIRED_PACKAGES = [
     'termcolor >= 1.1.0',
     'typing_extensions >= 3.6.6',
     'wrapt >= 1.11.0',
-    # TODO(b/305196096): Remove the <3.12 condition once the pkg is updated
-    'tensorflow-io-gcs-filesystem >= 0.23.1 ; python_version < "3.12"',
     # grpcio does not build correctly on big-endian machines due to lack of
     # BoringSSL support.
     # See https://github.com/tensorflow/tensorflow/issues/17882.
@@ -114,9 +110,13 @@ REQUIRED_PACKAGES = [
     # dependencies on the release branch is updated to the stable releases (RC
     # or final). For example, 'keras-nightly ~= 2.14.0.dev' will be replaced by
     # 'keras >= 2.14.0rc0, < 2.15' on the release branch after the branch cut.
-    'tb-nightly ~= 2.17.0.a',
-    'keras-nightly >= 3.2.0.dev',
+    'tb-nightly ~= 2.19.0.a',
+    'keras-nightly >= 3.6.0.dev',
+    'numpy >= 1.26.0, < 2.2.0',
+    'h5py >= 3.11.0',
+    'ml_dtypes >= 0.5.1, < 1.0.0',
 ]
+
 REQUIRED_PACKAGES = [p for p in REQUIRED_PACKAGES if p is not None]
 
 FAKE_REQUIRED_PACKAGES = [
@@ -145,30 +145,36 @@ if collaborator_build:
   ]
 
 # Set up extra packages, which are optional sets of other Python package deps.
-# E.g. "pip install tensorflow[and-cuda]" below installs the normal TF deps
+# E.g. "pip install tensorflow[and-cuda]" below installs the normal TF deps,
 # plus the CUDA libraries listed.
-EXTRA_PACKAGES = {}
-EXTRA_PACKAGES['and-cuda'] = [
-    # TODO(nluehr): set nvidia-* versions based on build components.
-    'nvidia-cublas-cu12 == 12.3.4.1',
-    'nvidia-cuda-cupti-cu12 == 12.3.101',
-    'nvidia-cuda-nvcc-cu12 == 12.3.107',
-    'nvidia-cuda-nvrtc-cu12 == 12.3.107',
-    'nvidia-cuda-runtime-cu12 == 12.3.101',
-    'nvidia-cudnn-cu12 == 8.9.7.29',
-    'nvidia-cufft-cu12 == 11.0.12.1',
-    'nvidia-curand-cu12 == 10.3.4.107',
-    'nvidia-cusolver-cu12 == 11.5.4.101',
-    'nvidia-cusparse-cu12 == 12.2.0.103',
-    'nvidia-nccl-cu12 == 2.19.3',
-    'nvidia-nvjitlink-cu12 == 12.3.101',
-]
+EXTRA_PACKAGES = {
+    'and-cuda': [
+        # TODO(nluehr): set nvidia-* versions based on build components.
+        'nvidia-cublas-cu12 == 12.5.3.2',
+        'nvidia-cuda-cupti-cu12 == 12.5.82',
+        'nvidia-cuda-nvcc-cu12 == 12.5.82',
+        'nvidia-cuda-nvrtc-cu12 == 12.5.82',
+        'nvidia-cuda-runtime-cu12 == 12.5.82',
+        'nvidia-cudnn-cu12 == 9.3.0.75',
+        'nvidia-cufft-cu12 == 11.2.3.61',
+        'nvidia-curand-cu12 == 10.3.6.82',
+        'nvidia-cusolver-cu12 == 11.6.3.83',
+        'nvidia-cusparse-cu12 == 12.5.1.3',
+        'nvidia-nccl-cu12 == 2.25.1',
+        'nvidia-nvjitlink-cu12 == 12.5.82',
+    ],
+    'gcs-filesystem': [
+        ('tensorflow-io-gcs-filesystem>=0.23.1; '
+         'sys_platform!="win32" and python_version<"3.13"'),
+        ('tensorflow-io-gcs-filesystem>=0.23.1; '
+         'sys_platform=="win32" and python_version<"3.12"'),
+    ]
+}
 
 DOCLINES = __doc__.split('\n')
 
 # pylint: disable=line-too-long
 CONSOLE_SCRIPTS = [
-    'toco_from_protos = tensorflow.lite.toco.python.toco_from_protos:main',
     'tflite_convert = tensorflow.lite.python.tflite_convert:main',
     'toco = tensorflow.lite.python.tflite_convert:main',
     'saved_model_cli = tensorflow.python.tools.saved_model_cli:main',
@@ -249,7 +255,7 @@ class InstallHeaders(Command):
         '/tensorflow/include/external/com_google_absl': '',
         '/tensorflow/include/external/ducc': '/ducc',
         '/tensorflow/include/external/eigen_archive': '',
-        '/tensorflow/include/external/ml_dtypes': '/ml_dtypes',
+        '/tensorflow/include/external/ml_dtypes_py': '',
         '/tensorflow/include/tensorflow/compiler/xla': (
             '/tensorflow/include/xla'
         ),
@@ -312,17 +318,14 @@ if '_tpu' in project_name:
   # timing of these tests, the UTC date from eight hours ago is expected to be a
   # valid version.
   _libtpu_version = standard_or_nightly(
-      _VERSION.replace('-', ''),
-      '0.1.dev'
+      LATEST_RELEASE_LIBTPU_VERSION,
+      NEXT_LIBTPU_VERSION + '.dev'
       + (
           datetime.datetime.now(tz=datetime.timezone.utc)
           - datetime.timedelta(hours=8)
-      ).strftime('%Y%m%d'),
+      ).strftime('%Y%m%d') + '+nightly',
   )
-  if _libtpu_version.startswith('0.1'):
-    REQUIRED_PACKAGES.append([f'libtpu-nightly=={_libtpu_version}'])
-  else:
-    REQUIRED_PACKAGES.append([f'libtpu=={_libtpu_version}'])
+  REQUIRED_PACKAGES.append([f'libtpu=={_libtpu_version}'])
   CONSOLE_SCRIPTS.extend([
       'start_grpc_tpu_worker = tensorflow.python.tools.grpc_tpu_worker:run',
       ('start_grpc_tpu_service = '
@@ -360,7 +363,7 @@ headers = (
     + list(find_files('*.inc', 'tensorflow/include/external/com_google_absl'))
     + list(find_files('*.h', 'tensorflow/include/external/ducc/google'))
     + list(find_files('*', 'tensorflow/include/external/eigen_archive'))
-    + list(find_files('*.h', 'tensorflow/include/external/ml_dtypes'))
+    + list(find_files('*.h', 'tensorflow/include/external/ml_dtypes_py'))
 )
 
 # Quite a lot of setup() options are different if this is a collaborator package

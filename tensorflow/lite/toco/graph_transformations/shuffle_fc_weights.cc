@@ -12,15 +12,19 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include <memory>
+#include <cstddef>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/runtime/types.h"
+#include "tensorflow/lite/toco/toco_types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
 
 namespace toco {

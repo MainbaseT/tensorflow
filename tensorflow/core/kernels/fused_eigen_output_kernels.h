@@ -28,7 +28,6 @@ limitations under the License.
 
 #include <type_traits>
 
-#include "absl/status/status.h"
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -67,7 +66,7 @@ struct FusedComputationPattern {
 
 // Parse attributes from the kernel construction context, and verifies that they
 // specify valid fused computation pattern.
-Status InitializeFusedComputation(
+absl::Status InitializeFusedComputation(
     OpKernelConstruction* context, const string& kernel_name,
     const std::vector<FusedComputationPattern>& patterns,
     FusedComputationType* fused_computation,
@@ -410,17 +409,14 @@ template <typename T>
 using WithFusedBatchNormAndLeakyRelu = FusedBatchNormOutputKernel<T, LeakyRelu>;
 
 template <typename T>
-Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
-                       const float* leakyrelu_alpha = nullptr) {
+absl::Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
+                             const float* leakyrelu_alpha = nullptr) {
   // Bias of the following dimensions: [ output_depth ]
   const Tensor& bias = context->input(2);
-  for (int i = 0; i < bias.dims() - 1; ++i) {
-    if (bias.dim_size(i) != 1) {
-      return errors::InvalidArgument(
-          "all dimension sizes of bias must be 1 except the last dimension: ",
-          bias.shape().DebugString());
-    }
-  }
+
+  if (bias.dims() != 1)
+    return errors::InvalidArgument("bias must be 1-dimensional",
+                                   bias.shape().DebugString());
 
   const auto data_ptr = [](const Tensor& tensor) -> const T* {
     return reinterpret_cast<const T*>(tensor.tensor_data().data());
@@ -436,9 +432,9 @@ Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
 }
 
 template <typename T>
-Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
-                              FusedBatchNormArgs<T>* args,
-                              const float* leakyrelu_alpha = nullptr) {
+absl::Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
+                                    FusedBatchNormArgs<T>* args,
+                                    const float* leakyrelu_alpha = nullptr) {
   const Tensor& scale = context->input(2);
   const Tensor& offset = context->input(3);
   const Tensor& estimated_mean = context->input(4);

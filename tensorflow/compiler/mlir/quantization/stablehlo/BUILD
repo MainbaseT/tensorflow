@@ -144,10 +144,10 @@ cc_library(
         "@local_tsl//tsl/platform:protobuf",
         "@local_tsl//tsl/platform:regexp",
         "@local_tsl//tsl/platform:str_util",
-        "@local_tsl//tsl/protobuf:protos_all_cc",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/mlir_hlo:mhlo_passes",
         "@local_xla//xla/mlir_hlo:unfuse_batch_norm",
+        "@local_xla//xla/tsl/protobuf:protos_all_cc",
         "@stablehlo//:chlo_ops",
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_portable_api",
@@ -340,10 +340,11 @@ cc_library(
         "@llvm-project//mlir:TransformUtils",
         "@llvm-project//mlir:Transforms",
         "@local_xla//xla:xla_data_proto_cc",
+        "@local_xla//xla/hlo/translate/hlo_to_mhlo:attribute_importer",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/mlir_hlo:mhlo_passes",
-        "@local_xla//xla/translate/hlo_to_mhlo:attribute_importer",
         "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_passes",
     ],
 )
 
@@ -406,17 +407,19 @@ tf_cc_test(
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:errors",
-        "@local_tsl//tsl/platform:statusor",
         "@local_xla//xla:error_spec",
         "@local_xla//xla:literal",
         "@local_xla//xla:literal_util",
         "@local_xla//xla:shape_util",
+        "@local_xla//xla:xla_data_proto_cc",
         "@local_xla//xla/mlir_hlo",
         "@local_xla//xla/pjrt:pjrt_client",
         "@local_xla//xla/pjrt:pjrt_executable",
-        "@local_xla//xla/pjrt/cpu:cpu_client",
+        "@local_xla//xla/pjrt/plugin/xla_cpu:cpu_client_options",
+        "@local_xla//xla/pjrt/plugin/xla_cpu:xla_cpu_pjrt_client",
         "@local_xla//xla/tests:literal_test_util",
+        "@local_xla//xla/tsl/platform:errors",
+        "@local_xla//xla/tsl/platform:statusor",
         "@stablehlo//:chlo_ops",
     ],
 )
@@ -442,7 +445,8 @@ tf_cc_test(
         "@llvm-project//mlir:Pass",
         "@local_xla//xla:shape_util",
         "@local_xla//xla/client:client_library",
-        "@local_xla//xla/stream_executor",
+        "@local_xla//xla/stream_executor:platform",
+        "@local_xla//xla/stream_executor:platform_manager",
     ],
 )
 
@@ -463,7 +467,7 @@ tf_cc_test(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/platform:statusor",
+        "@local_xla//xla/tsl/platform:statusor",
     ],
 )
 
@@ -540,6 +544,7 @@ cc_library(
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:UBDialect",
         "@local_tsl//tsl/platform:protobuf",
         "@local_xla//xla/mlir_hlo",
         "@stablehlo//:chlo_ops",
@@ -657,8 +662,8 @@ tf_cc_test(
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/framework:numeric_types",
         "@local_xla//xla/mlir_hlo",
+        "@local_xla//xla/tsl/framework:numeric_types",
     ],
 )
 
@@ -706,8 +711,8 @@ tf_cc_test(
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:Support",
-        "@local_tsl//tsl/framework:numeric_types",
         "@local_xla//xla/mlir_hlo",
+        "@local_xla//xla/tsl/framework:numeric_types",
     ],
 )
 
@@ -718,7 +723,6 @@ tf_cc_test(
 tf_proto_library(
     name = "quantization_options_proto",
     srcs = ["quantization_options.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     visibility = ["//visibility:public"],
 )
@@ -726,7 +730,6 @@ tf_proto_library(
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "quantization_options_py_pb2",
-#     api_version = 2,
 #     visibility = [":internal_visibility_allowlist_package"],
 #     deps = [":quantization_options_proto"],
 # )
@@ -739,7 +742,6 @@ tf_proto_library(
 tf_proto_library(
     name = "quantization_config_proto",
     srcs = ["quantization_config.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     visibility = ["//visibility:public"],
 )
@@ -747,7 +749,6 @@ tf_proto_library(
 # copybara:uncomment_begin(google-only)
 # py_proto_library(
 #     name = "quantization_config_py_pb2",
-#     api_version = 2,
 #     visibility = [
 #         ":internal_visibility_allowlist_package",
 #     ],
@@ -774,6 +775,7 @@ tf_cc_binary(
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tf_dialect_passes",
         "//tensorflow/core/ir/types:Dialect",
+        "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
@@ -782,7 +784,6 @@ tf_cc_binary(
         "@llvm-project//mlir:QuantOps",
         "@llvm-project//mlir:SCFDialect",
         "@llvm-project//mlir:ShapeDialect",
-        "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
         "@local_xla//xla/mlir_hlo:hlo_dialect_registration",
         "@local_xla//xla/mlir_hlo:mhlo_passes",

@@ -4,10 +4,13 @@ load(
     "gentbl_cc_library",
 )
 load("//tensorflow:strict.default.bzl", "py_strict_library")
-load("//tensorflow:tensorflow.bzl", "tf_cc_binary", "tf_cc_test")
+load("//tensorflow:tensorflow.bzl", "if_google", "tf_cc_binary", "tf_cc_test")
 load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
+load(
+    "//tensorflow/core/platform:build_config.bzl",
+    "tf_proto_library",
+)
 load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
-# copybara:uncomment load("//tools/build_defs/proto/cpp:cc_proto_library.bzl", "cc_proto_library")
 
 package(
     # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
@@ -36,6 +39,7 @@ cc_library(
         ":runtime_metadata_fbs",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "//tensorflow/compiler/mlir/lite/experimental/tac/hardwares:target_hardware",
+        "//tensorflow/compiler/mlir/lite/quantization/ir:QuantOps",
         "//tensorflow/compiler/mlir/tensorflow",
         "@flatbuffers",
         "@llvm-project//llvm:Support",
@@ -54,13 +58,10 @@ tf_cc_test(
     deps = [
         ":execution_metadata_exporter",
         ":runtime_metadata_fbs",
-        "//tensorflow/compiler/mlir/lite:flatbuffer_translate_lib",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "//tensorflow/compiler/mlir/lite/experimental/tac/hardwares:all-target-hardwares",
         "@com_google_googletest//:gtest_main",
         "@flatbuffers",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//mlir:AllPassesAndDialects",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
@@ -85,6 +86,7 @@ cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:CastInterfaces",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:QuantOps",
@@ -252,7 +254,7 @@ cc_library(
         ":common",
         ":cost_model",
         ":device_transform",
-        ":tac_filter_cc_proto",
+        ":tac_filter_proto_cc",
         ":tac_importer_exporter",
         "//tensorflow/compiler/mlir/lite:tensorflow_lite",
         "//tensorflow/compiler/mlir/lite:tf_tfl_passes",
@@ -327,6 +329,7 @@ cc_library(
         "//tensorflow/compiler/mlir/tensorflow:error_util",
         "//tensorflow/compiler/mlir/tensorflow/transforms:tensorflow_passes",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
@@ -386,21 +389,15 @@ py_strict_library(
     srcs = [
         "tac.py",
     ],
-    srcs_version = "PY3",
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/compiler/mlir/lite/experimental/tac/py_wrapper:_pywrap_tac_wrapper",
     ],
 )
 
-proto_library(
+tf_proto_library(
     name = "tac_filter_proto",
     srcs = ["tac_filter.proto"],
-    compatible_with = get_compatible_with_portable(),
-)
-
-cc_proto_library(
-    name = "tac_filter_cc_proto",
-    compatible_with = get_compatible_with_portable(),
-    deps = [":tac_filter_proto"],
+    protodeps = if_google(["//google/protobuf:any"]),
+    visibility = ["//visibility:public"],
 )

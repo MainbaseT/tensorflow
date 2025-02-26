@@ -1,21 +1,22 @@
 """Wrapper around proto libraries used inside the XLA codebase."""
 
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 load(
     "@local_config_rocm//rocm:build_defs.bzl",
     "if_rocm_is_configured",
 )
 load(
-    "@local_tsl//tsl/platform:build_config_root.bzl",
+    "//xla/tsl:tsl.bzl",
+    "tsl_copts",
+)
+load(
+    "//xla/tsl/platform:build_config_root.bzl",
     "if_static",
     "tf_exec_properties",
 )
 load(
-    "@local_tsl//tsl/platform/default:cuda_build_defs.bzl",
+    "//xla/tsl/platform/default:cuda_build_defs.bzl",
     "if_cuda_is_configured",
-)
-load(
-    "//xla/tsl:tsl.bzl",
-    "tsl_copts",
 )
 
 def xla_py_proto_library(**_kwargs):
@@ -38,27 +39,28 @@ _XLA_SHARED_OBJECT_SENSITIVE_DEPS = if_static(extra_deps = [], otherwise = [
     Label("//xla:xla_proto_cc_impl"),
     Label("//xla/service:buffer_assignment_proto_cc_impl"),
     Label("//xla/service:hlo_proto_cc_impl"),
+    Label("//xla/service:metrics_proto_cc_impl"),
     Label("//xla/service/gpu:backend_configs_cc_impl"),
     Label("//xla/service/gpu/model:hlo_op_profile_proto_cc_impl"),
     Label("//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl"),
     Label("//xla/stream_executor:device_description_proto_cc_impl"),
     Label("//xla/stream_executor:stream_executor_impl"),
+    Label("//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl"),
     Label("//xla/stream_executor/gpu:gpu_init_impl"),
+    Label("//xla/backends/cpu/runtime:thunk_proto_cc_impl"),
     "@com_google_protobuf//:protobuf",
-    "@local_tsl//tsl/framework:allocator_registry_impl",
-    "@local_tsl//tsl/framework:allocator",
-    "@local_tsl//tsl/platform:env_impl",
-    "@local_tsl//tsl/profiler/backends/cpu:annotation_stack_impl",
-    "@local_tsl//tsl/profiler/backends/cpu:traceme_recorder_impl",
+    "//xla/tsl/framework:allocator_registry_impl",
+    "//xla/tsl/framework:allocator",
+    "//xla/tsl/platform:env_impl",
+    "//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+    "//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
     "@local_tsl//tsl/profiler/protobuf:profiler_options_proto_cc_impl",
     "@local_tsl//tsl/profiler/protobuf:xplane_proto_cc_impl",
-    "@local_tsl//tsl/profiler/utils:time_utils_impl",
-    "@local_tsl//tsl/protobuf:protos_all_cc_impl",
+    "//xla/tsl/profiler/utils:time_utils_impl",
+    "//xla/tsl/protobuf:protos_all_cc_impl",
 ]) + if_cuda_is_configured([
     Label("//xla/stream_executor/cuda:all_runtime"),
-    Label("//xla/stream_executor/cuda:cuda_stream"),
     Label("//xla/stream_executor/cuda:stream_executor_cuda"),
-    Label("//xla/stream_executor/gpu:gpu_cudamallocasync_allocator"),
 ]) + if_rocm_is_configured([
     Label("//xla/stream_executor/gpu:gpu_stream"),
     Label("//xla/stream_executor/rocm:all_runtime"),
@@ -69,19 +71,45 @@ _XLA_SHARED_OBJECT_SENSITIVE_DEPS = if_static(extra_deps = [], otherwise = [
 def xla_cc_binary(deps = [], copts = tsl_copts(), **kwargs):
     native.cc_binary(deps = deps + _XLA_SHARED_OBJECT_SENSITIVE_DEPS, copts = copts, **kwargs)
 
-def xla_cc_test(name, deps = [], **kwargs):
+def xla_cc_test(
+        name,
+        deps = [],
+        linkstatic = True,
+        args = None,
+        shuffle_tests = True,
+        **kwargs):
+    """A wrapper around cc_test that adds XLA-specific dependencies.
+
+    Also, it sets linkstatic to True by default, which is a good practice for catching duplicate
+    symbols at link time (e.g. linking in two main() functions).
+
+    Use xla_cc_test or xla_test instead of cc_test in all .../xla/... directories except .../tsl/...,
+    where tsl_cc_test should be used.
+
+    Args:
+      name: The name of the test.
+      deps: The dependencies of the test.
+      linkstatic: Whether to link statically.
+      args: The arguments to pass to the test.
+      shuffle_tests: Whether to shuffle the test cases.
+      **kwargs: Other arguments to pass to the test.
+    """
+
+    if args == None:
+        args = []
+
+    if shuffle_tests:
+        # Shuffle tests to avoid test ordering dependencies.
+        args = args + ["--gtest_shuffle"]
+
     native.cc_test(
         name = name,
+        args = args,
         deps = deps + _XLA_SHARED_OBJECT_SENSITIVE_DEPS,
+        linkstatic = linkstatic,
         exec_properties = tf_exec_properties(kwargs),
         **kwargs
     )
-
-def xla_nvml_deps():
-    return ["@local_config_cuda//cuda:nvml_headers"]
-
-def xla_cub_deps():
-    return ["@local_config_cuda//cuda:cub_headers"]
 
 def xla_internal(targets, otherwise = []):
     _ = targets  # buildifier: disable=unused-variable
@@ -89,3 +117,16 @@ def xla_internal(targets, otherwise = []):
 
 def tests_build_defs_bzl_deps():
     return []
+
+def xla_bzl_library(name = "xla_bzl_library"):
+    bzl_library(
+        name = "xla_bzl",
+        srcs = ["xla.bzl"],
+        deps = [
+            "//xla/tsl:tsl_bzl",
+            "@local_config_rocm//rocm:build_defs_bzl",
+            "//xla/tsl/platform:build_config_root_bzl",
+            "//xla/tsl/platform/default:cuda_build_defs_bzl",
+            "@bazel_skylib//:bzl_library",
+        ],
+    )

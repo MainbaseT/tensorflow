@@ -21,7 +21,6 @@ limitations under the License.
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -31,30 +30,30 @@ limitations under the License.
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/base/log_severity.h"
 #include "absl/base/macros.h"
 #include "absl/base/thread_annotations.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/memory/memory.h"
 #include "absl/numeric/bits.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
-#include "Eigen/Core"  // from @eigen_archive
-#include "xla/status.h"
+#include "Eigen/Core"
 #include "xla/status_macros.h"
+#include "xla/tsl/lib/math/math_util.h"
+#include "xla/tsl/platform/errors.h"  // IWYU pragma: keep
+#include "xla/tsl/platform/logging.h"
 #include "xla/types.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/lib/math/math_util.h"
 #include "tsl/platform/bfloat16.h"
 #include "tsl/platform/casts.h"
-#include "tsl/platform/errors.h"  // IWYU pragma: keep
-#include "tsl/platform/logging.h"
 #include "tsl/platform/ml_dtypes.h"
 
 namespace xla {
@@ -417,10 +416,16 @@ std::string VectorString(const std::initializer_list<T>& c) {
   return VectorString<std::initializer_list<T>>(c);
 }
 
+// Returns a string which can losslessly round trip to a float4 E2M1FN.
+std::string RoundTripFpToString(tsl::float4_e2m1fn value);
+
 // Returns a string which can losslessly round trip to a float8 E5M2.
 std::string RoundTripFpToString(tsl::float8_e5m2 value);
 
 // Returns a string which can losslessly round trip to a float8 E4M3.
+std::string RoundTripFpToString(tsl::float8_e4m3 value);
+
+// Returns a string which can losslessly round trip to a float8 E4M3FN.
 std::string RoundTripFpToString(tsl::float8_e4m3fn value);
 
 // Returns a string which can losslessly round trip to a float8 E4M3B11.
@@ -431,6 +436,12 @@ std::string RoundTripFpToString(tsl::float8_e5m2fnuz value);
 
 // Returns a string which can losslessly round trip to a float8 E4M3FNUZ.
 std::string RoundTripFpToString(tsl::float8_e4m3fnuz value);
+
+// Returns a string which can losslessly round trip to a float8 E3M4.
+std::string RoundTripFpToString(tsl::float8_e3m4 value);
+
+// Returns a string which can losslessly round trip to a float8 E8M0FNU.
+std::string RoundTripFpToString(tsl::float8_e8m0fnu value);
 
 // Returns a string which can losslessly round trip to a bfloat.
 std::string RoundTripFpToString(tsl::bfloat16 value);
@@ -513,7 +524,24 @@ std::string HumanReadableNumTranscendentalOps(double trops, double nanoseconds);
 
 // Split the text into multiple lines and log each line with the given
 // severity, filename, and line number.
-void LogLines(int sev, absl::string_view text, const char* fname, int lineno);
+void LogLines(absl::LogSeverity sev, absl::string_view text, const char* fname,
+              int lineno);
+inline void LogLinesINFO(absl::string_view text, const char* fname,
+                         int lineno) {
+  return LogLines(absl::LogSeverity::kInfo, text, fname, lineno);
+}
+inline void LogLinesWARNING(absl::string_view text, const char* fname,
+                            int lineno) {
+  return LogLines(absl::LogSeverity::kWarning, text, fname, lineno);
+}
+inline void LogLinesERROR(absl::string_view text, const char* fname,
+                          int lineno) {
+  return LogLines(absl::LogSeverity::kError, text, fname, lineno);
+}
+inline void LogLinesFATAL(absl::string_view text, const char* fname,
+                          int lineno) {
+  return LogLines(absl::LogSeverity::kFatal, text, fname, lineno);
+}
 
 // Returns a mask with "width" number of least significant bits set.
 template <typename T>
@@ -630,8 +658,9 @@ template <typename T>
 auto SignAndMagnitude(T x) {
   using BitType = UnsignedIntegerTypeForSizeType<sizeof(T)>;
   BitType x_abs_bits = Eigen::numext::bit_cast<BitType>(Eigen::numext::abs(x));
-  const BitType x_bits = Eigen::numext::bit_cast<BitType>(x);
-  const BitType x_sign = x_bits ^ x_abs_bits;
+  // Eigen implements the sign value to be either all-zeros (for positive input)
+  // or all-ones (for negative input).
+  BitType x_sign = Eigen::numext::bit_cast<BitType>(Eigen::numext::signbit(x));
   if constexpr (!has_negative_zero_v<T>) {
     //  f8e4m3b11, f8e4m3fnuz, and f8e5m2fnuz don't support -0, adjust negative
     //  numbers to fill in the gap.
@@ -642,12 +671,17 @@ auto SignAndMagnitude(T x) {
   return std::make_pair(x_sign, x_abs_bits);
 }
 
+template <>
+inline auto SignAndMagnitude(tsl::float8_e8m0fnu x) {
+  uint8_t x_bits = Eigen::numext::bit_cast<uint8_t>(x);
+  return std::make_pair(static_cast<uint8_t>(0), x_bits);
+}
+
 template <typename T>
 auto SignAndMagnitudeToTwosComplement(T sign, T magnitude) {
   static_assert(!std::numeric_limits<T>::is_signed);
   using SignedType = std::make_signed_t<T>;
-  return static_cast<SignedType>(magnitude) ^
-         (static_cast<SignedType>(sign) < 0 ? SignedType{-1} : SignedType{0});
+  return static_cast<SignedType>(magnitude) ^ static_cast<SignedType>(sign);
 }
 
 // Returns the signed magnitude of T.
@@ -655,6 +689,11 @@ template <typename T>
 auto ToSignMagnitude(T input) {
   auto [sign, magnitude] = SignAndMagnitude(input);
   return SignAndMagnitudeToTwosComplement(sign, magnitude);
+}
+
+template <>
+inline auto ToSignMagnitude(tsl::float8_e8m0fnu input) {
+  return Eigen::numext::bit_cast<uint8_t>(input);
 }
 
 template <typename T>
@@ -748,6 +787,12 @@ struct ConvertedDimensionNumbers {
 ConvertedDimensionNumbers ConvertDimensionNumbers(
     absl::Span<const int64_t> from_dimensions,
     absl::Span<const int64_t> from_sizes, absl::Span<const int64_t> to_sizes);
+
+// Returns non contracting dimensions for a dot operand based on rank, batch and
+// contracting dimension numbers.
+DimensionVector GetNonContractingDims(
+    int64_t rank, absl::Span<const int64_t> contracting_dim_numbers,
+    absl::Span<const int64_t> batch_dim_numbers);
 
 // Removes illegal characters from filenames.
 std::string SanitizeFileName(std::string file_name);
@@ -878,6 +923,22 @@ inline void UnpackIntN(int bits_per_element, absl::Span<const char> input,
   }
 }
 
+// Returns a container with `sorted_ids_to_remove` elements removed.
+template <typename T>
+static T RemoveElements(absl::Span<int64_t const> sorted_ids_to_remove,
+                        const T& container) {
+  T result;
+  auto id_to_remove = sorted_ids_to_remove.begin();
+  for (size_t i = 0; i < container.size(); ++i) {
+    if (id_to_remove != sorted_ids_to_remove.end() && *id_to_remove == i) {
+      ++id_to_remove;
+      continue;
+    }
+    result.push_back(container[i]);
+  }
+  return result;
+}
+
 class HloInstruction;
 class HloModule;
 
@@ -893,19 +954,15 @@ using Vector3 = std::array<int64_t, 3>;
 
 }  // namespace xla
 
+// Note that STRING is evaluated regardless of whether it will be logged.
 #define XLA_LOG_LINES(SEV, STRING) \
-  ::xla::LogLines(SEV, STRING, __FILE__, __LINE__)
+  ::xla::LogLines##SEV(STRING, __FILE__, __LINE__)
 
-#define XLA_VLOG_LINES(LEVEL, STRING)                          \
-  do {                                                         \
-    if (VLOG_IS_ON(LEVEL)) XLA_LOG_LINES(::tsl::INFO, STRING); \
-  } while (false);
-
-// Utility macro that performs the equivalent of what one would expect
-// LOG_LINES(FATAL, X) to do but can be used at the end of a function that
-// returns a value without getting a compiler warning that no value is returned.
-#define XLA_FATAL_LOG(X)          \
-  XLA_LOG_LINES(::tsl::ERROR, X); \
-  LOG(FATAL) << "Aborting in " << __FUNCTION__ << " due to previous errors.";
+// Like LOG_LINES, but only logs if VLOG is enabled for the given level.
+// STRING is evaluated only if it will be logged.
+#define XLA_VLOG_LINES(LEVEL, STRING)                   \
+  do {                                                  \
+    if (VLOG_IS_ON(LEVEL)) XLA_LOG_LINES(INFO, STRING); \
+  } while (false)
 
 #endif  // XLA_UTIL_H_

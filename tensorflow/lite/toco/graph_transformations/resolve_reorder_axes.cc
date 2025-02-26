@@ -19,9 +19,12 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
+#include "tensorflow/lite/toco/toco_types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
 
 namespace toco {
@@ -79,8 +82,8 @@ void ReorderAxes(AxesOrder input_axes_order, AxesOrder output_axes_order,
   }
 }
 
-::tensorflow::Status ResolveReorderAxes::Run(Model* model, std::size_t op_index,
-                                             bool* modified) {
+absl::Status ResolveReorderAxes::Run(Model* model, std::size_t op_index,
+                                     bool* modified) {
   *modified = false;
   auto it = model->operators.begin() + op_index;
   auto* op = it->get();

@@ -16,17 +16,19 @@ limitations under the License.
 #ifndef XLA_SERVICE_GPU_MODEL_SYMBOLIC_TILE_H_
 #define XLA_SERVICE_GPU_MODEL_SYMBOLIC_TILE_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <ostream>
 #include <string>
 #include <utility>
 
 #include "absl/log/check.h"
-#include "llvm/ADT/DenseMap.h"
-#include "mlir/IR/AffineExpr.h"  // from @llvm-project
-#include "mlir/IR/AffineMap.h"  // from @llvm-project
-#include "xla/service/gpu/model/affine_map_printer.h"
-#include "xla/service/gpu/model/indexing_map.h"
+#include "absl/types/span.h"
+#include "llvm/ADT/SmallVector.h"
+#include "mlir/IR/AffineMap.h"
+#include "xla/hlo/analysis/indexing_map.h"
+#include "xla/service/gpu/model/constraint_expression.h"
 
 namespace xla {
 namespace gpu {
@@ -39,23 +41,23 @@ namespace gpu {
 // along each dimension can be expressed as a strided expression
 //     offset + stride * iota(size)
 //
-// where offset and stride are non-negative integers, size is a strictly
-// positive integer and `iota` is the usual range function.
+// where offset is a non-negative integer, stride is an integer, and size is a
+// strictly positive integer and `iota` is the usual range function.
 //
 // An *N-dimensional symbolic tile* is a function from an M-dimensional
 // tile to an N-dimensional tile. The input tile is assumed to have all offsets
 // equal to 0 and all strides equal to 1.
 //
 // It is represented with "tile_map()", which is an IndexingMap of this form:
-// (size0, ..., size{n-1}) ->  (offset0, ..., offset{n-1},
-//                              size'0, ..., size'{n-1},
-//                              stride0, ..., stride{n-1})
+// (size0, ..., size{M-1}) ->  (offset0, ..., offset{N-1},
+//                              size'0, ..., size'{N-1},
+//                              stride0, ..., stride{N-1})
 //
 // We can get three AffineMap projections of tile_map(), which are just
 // convenience methods to get the components that we need:
-// offset_map(): ()[size0, ..., size{M-1}] -> (offset0, ..., offset{N-1})
-// size_map():   ()[size0, ..., size{M-1}] -> (size'0, ..., size'{N-1})
-// stride_map(): ()[size0, ..., size{M-1}] -> (stride0, ..., stride{N-1})
+//     offset_map(): (size0, ..., size{M-1}) -> (offset0, ..., offset{N-1})
+//     size_map():   (size0, ..., size{M-1}) -> (size'0, ..., size'{N-1})
+//     stride_map(): (size0, ..., size{M-1}) -> (stride0, ..., stride{N-1})
 //
 // The maps respectively encode the offset, size, and stride component of each
 // strided expression in the result tile.
@@ -80,7 +82,7 @@ namespace gpu {
 //
 // Def. An n-dimensional tile is a function:
 // t: Z^k -> P(N^n) =
-//    rt_vars -> CartesianProduct_{i=1, ..., n-1}({
+//    rt_vars -> CartesianProduct_{i=0, ..., n-1}({
 //           offsets(rt_vars)[i] + strides[i] * 0,
 //           ...,
 //           offsets(rt_vars)[i] + strides[i] * (sizes[i]-1)
@@ -94,11 +96,11 @@ namespace gpu {
 //
 //    rt_vars: Z^k (so called "runtime variables")
 //    offsets: Z^k -> N^n
-//    strides: N^n
+//    strides: Z^n
 //    sizes: (N+)^n
 //
 // Notation. We can represent n-dimensional tiles as:
-// (offsets, strides, sizes): (Z^k -> N^n) x N^n x (N+)^n
+//   (offsets, strides, sizes): (Z^k -> N^n) x Z^n x (N+)^n
 // where A x B means a Cartesian product.
 //
 // Def. Let Tiles(n) denote the set of n-dimensional tiles.
@@ -112,15 +114,15 @@ namespace gpu {
 //   -> (offsets', strides', sizes') : Tiles(n)
 // as a vector of functions:
 //   (offset_map, stride_map, size_map) where:
-//     offset_map: ((Z^j -> N^m) x N^m x (N+)^m) -> (Z^k -> N^n)
-//     stride_map: ((Z^j -> N^m) x N^m x (N+)^m) -> N^n
-//     size_map: ((Z^j -> N^m) x N^m x (N+)^m) -> (N+)^n
+//     offset_map: ((Z^j -> N^m) x Z^m x (N+)^m) -> (Z^k -> N^n)
+//     stride_map: ((Z^j -> N^m) x Z^m x (N+)^m) -> Z^n
+//     size_map: ((Z^j -> N^m) x Z^m x (N+)^m) -> (N+)^n
 // where each "map" returns one component of the result Tile.
 //
 // If we assume that offsets=({} -> {0, ..., 0}) and strides={1, ..., 1}, then
 // we can simplify the definition:
 //     offset_map: (N+)^m -> (Z^k -> N^n)
-//     stride_map: (N+)^m -> N^n
+//     stride_map: (N+)^m -> Z^n
 //     size_map: (N+)^m -> (N+)^n
 //
 // As a notation, we can further simplify the structure of offset_map:
@@ -129,16 +131,16 @@ namespace gpu {
 //
 // In the code we represent a symbolic tile with "tile_map()", which is an
 // IndexingMap of this form:
-// (size0, ..., size{n-1})
+// (size0, ..., size{m-1})
 // [rt_var0, ..., rt_var{k-1}] -> (offset0, ..., offset{n-1},
 //                                 size'0, ..., size'{n-1},
 //                                 stride0, ..., stride{n-1})
 //
 // We can get three AffineMap projections of tile_map(), which are just
 // convenience methods to get the components that we need:
-// offset_map(): ()[sizes..., rt_vars...] -> offsets'
-// size_map():   ()[sizes...] -> sizes'
-// stride_map(): ()[sizes...] -> strides'
+// offset_map(): (sizes...)[rt_vars...] -> offsets'
+// size_map():   (sizes...) -> sizes'
+// stride_map(): (sizes...) -> strides'
 //
 // The size parameters of the projections may be arbitrarily constrained, in
 // order to ensure that applying the symbolic tile on an input tile yields a
@@ -157,49 +159,35 @@ namespace gpu {
 // simplified later.
 class SymbolicTile {
  public:
-  static std::optional<SymbolicTile> FromIndexingMap(
-      const IndexingMap& indexing_map);
-
-  using ConstraintMap = llvm::DenseMap<mlir::AffineExpr, Interval>;
+  static std::optional<SymbolicTile> FromIndexingMap(IndexingMap indexing_map);
 
   // For printing in tests.
-  std::string RtVarsToString(
-      const AffineMapPrinter& printer = AffineMapPrinter()) const;
-  std::string ToString(
-      const AffineMapPrinter& printer = AffineMapPrinter()) const;
+  std::string ToString() const;
 
-  void Print(std::ostream& out, const AffineMapPrinter& printer) const;
+  void Print(std::ostream& out) const;
 
   mlir::AffineMap offset_map() const;
   mlir::AffineMap size_map() const;
   mlir::AffineMap stride_map() const;
 
-  // Constraints on the `sizes` of the input tile. The variable names in this
-  // map correspond to the parameter names of `offset_map()`, `size_map()`, and
-  // `stride_map()`. Contents are irrelevant when `is_satisfiable()` is false.
-  const ConstraintMap& constraints() const {
-    CHECK(is_satisfiable_);
+  // Constraints on the `sizes` of the input tile. Content is irrelevant when
+  // `is_satisfiable()` is false.
+  const ConstraintExpression& constraints() const {
+    CHECK(constraints_.is_satisfiable());
     return constraints_;
   }
 
   // Whether the `SymbolicTile` constraints can be satisfied. When this is set
-  // to true, the domain of the `SymbolicTile` must be considered empty.
-  bool is_satisfiable() const { return is_satisfiable_; }
+  // to `false`, the domain of the `SymbolicTile` must be considered empty.
+  bool is_satisfiable() const { return constraints_.is_satisfiable(); }
 
   // A map from one tile's sizes and RTVars to another tile's offsets, sizes,
   // and strides.
   //
-  // (size0, ..., size{n-1})
+  // (size0, ..., size{m-1})
   // [rt_var0, ..., rt_var{k-1}] -> (offset0, ..., offset{n-1},
   //                                 size'0, ..., size'{n-1},
   //                                 stride0, ..., stride{n-1})
-  //
-  //
-  // Its type is IndexingMap, but it's not a map of indices.
-  // This indexing map wraps the relevant domain constraints.
-  //
-  // Warning: The dimensions and symbols in tile_map do not match the dimensions
-  // and symbols in offset_map, size_map, and stride_map.
   const IndexingMap& tile_map() const { return tile_map_; }
 
   // This allows GUnit to print the tile.
@@ -213,17 +201,23 @@ class SymbolicTile {
   IndexingMap tile_map_;
 
   // See the comment of constraints().
-  ConstraintMap constraints_;
+  ConstraintExpression constraints_;
 
-  // See the comment of is_satisfiable().
-  bool is_satisfiable_ = true;
-
-  explicit SymbolicTile(IndexingMap tile_map, ConstraintMap constraints,
-                        bool is_satisfiable = true)
-      : tile_map_(std::move(tile_map)),
-        constraints_(std::move(constraints)),
-        is_satisfiable_(is_satisfiable) {}
+  explicit SymbolicTile(IndexingMap tile_map, ConstraintExpression constraints)
+      : tile_map_(std::move(tile_map)), constraints_(std::move(constraints)) {}
 };
+
+// Evaluates the tile offsets of `symbolic_tile` given tile parameters.
+llvm::SmallVector<int64_t> EvaluateTileOffsets(
+    const SymbolicTile& symbolic_tile, absl::Span<int64_t const> parameters);
+
+// Evaluates the tile sizes of `symbolic_tile` given tile parameters.
+llvm::SmallVector<int64_t> EvaluateTileSizes(
+    const SymbolicTile& symbolic_tile, absl::Span<int64_t const> parameters);
+
+// Evaluates the tile strides of `symbolic_tile` given tile parameters.
+llvm::SmallVector<int64_t> EvaluateTileStrides(
+    const SymbolicTile& symbolic_tile, absl::Span<int64_t const> parameters);
 
 }  // namespace gpu
 }  // namespace xla

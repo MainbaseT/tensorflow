@@ -106,7 +106,9 @@ def MHLO_IotaOp : MHLO_Op<"iota", [Pure]> {
     %output = mhlo.iota dim = 0 : tensor<4x5xi32>
     ```
   }];
-  let arguments = (ins I64Attr:$iota_dimension);
+  let arguments = (ins
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$iota_dimension
+  );
 
   let results = (outs MHLO_StaticShapeIntFpOrComplexTensor:$output);
 
@@ -133,7 +135,10 @@ def MHLO_DynamicIotaOp: MHLO_ShapedInterfaceOp<"dynamic_iota", [Pure]> {
     ```
   }];
 
-  let arguments = (ins MHLO_DimensionTensor:$output_shape, I64Attr:$iota_dimension);
+  let arguments = (ins
+    MHLO_DimensionTensor:$output_shape,
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$iota_dimension
+  );
   let results = (outs MHLO_Tensor:$result);
 
   let hasCanonicalizer = 1;
@@ -230,7 +235,7 @@ def MHLO_CbrtOp: MHLO_UnaryElementwiseOp<"cbrt",
   }];
 }
 def MHLO_CeilOp: MHLO_UnaryElementwiseOp<"ceil",
-    [Pure, HLO_CompatibleOperandsAndResultType], MHLO_FpTensor> {
+    [Pure, HLO_CompatibleOperandsAndResultType], MHLO_FpOrQuantizedIntTensor> {
   let summary = "Ceil operation";
   let description = [{
     Performs element-wise ceil of `operand` tensor and produces a `result` tensor.
@@ -338,6 +343,10 @@ def MHLO_ExpOp: MHLO_UnaryElementwiseOp<"exponential",
     %result = mhlo.exponential %operand : tensor<2x2xf64>
     ```
   }];
+  let arguments = (ins MHLO_FpComplexOrQuantizedIntTensor:$operand,
+   DefaultValuedOptionalAttr<MHLO_ResultAccuracyAttr, "::mlir::mhlo::ResultAccuracyMode::DEFAULT">:$result_accuracy);
+  let results = (outs MHLO_FpComplexOrQuantizedIntTensor:$result);
+  let hasVerifier = 1;
   let hasFolder = 1;
 }
 def MHLO_Expm1Op: MHLO_UnaryElementwiseOp<"exponential_minus_one",
@@ -357,7 +366,7 @@ def MHLO_Expm1Op: MHLO_UnaryElementwiseOp<"exponential_minus_one",
   }];
 }
 def MHLO_FloorOp: MHLO_UnaryElementwiseOp<"floor",
-    [Pure, HLO_CompatibleOperandsAndResultType], MHLO_FpTensor> {
+    [Pure, HLO_CompatibleOperandsAndResultType], MHLO_FpOrQuantizedIntTensor> {
   let summary = "Floor operation";
   let description = [{
     Performs element-wise floor of `operand` tensor and produces a `result`
@@ -1480,7 +1489,7 @@ def MHLO_AllGatherOp : MHLO_Op<"all_gather", [SameOperandsAndResultElementType]>
 
   let arguments = (ins
     Variadic<MHLO_Tensor>:$operands,
-    I64Attr:$all_gather_dim,
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$all_gather_dim,
     I64ElementsAttr:$replica_groups,
     OptionalAttr<MHLO_ChannelHandle>:$channel_handle,
     UnitAttr:$use_global_device_ids
@@ -1582,7 +1591,7 @@ def MHLO_ReduceScatterOp : MHLO_Op<"reduce_scatter", []> {
 
   let arguments = (ins
     MHLO_Tensor:$operand,
-    I64Attr:$scatter_dimension,
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$scatter_dimension,
     I64ElementsAttr:$replica_groups,
     OptionalAttr<MHLO_ChannelHandle>:$channel_handle,
     UnitAttr:$use_global_device_ids
@@ -1631,9 +1640,9 @@ def MHLO_AllToAllOp : MHLO_Op<"all_to_all",
     Variadic<MHLO_Tensor>:$operand,
     // split_dimension, concat_dimension and split_count are present for array
     // all-to-all, absent for tuple all-to-all.
-    OptionalAttr<I64Attr>:$split_dimension,
-    OptionalAttr<I64Attr>:$concat_dimension,
-    OptionalAttr<I64Attr>:$split_count,
+    OptionalAttr<ConfinedAttr<I64Attr, [IntNonNegative]>>:$split_dimension,
+    OptionalAttr<ConfinedAttr<I64Attr, [IntNonNegative]>>:$concat_dimension,
+    OptionalAttr<ConfinedAttr<I64Attr, [IntPositive]>>:$split_count,
     I64ElementsAttr:$replica_groups,
     OptionalAttr<MHLO_ChannelHandle>:$channel_handle
   );
@@ -1729,7 +1738,7 @@ def MHLO_GetTupleElementOp: MHLO_Op<"get_tuple_element", [Pure,
   }];
   let arguments = (ins
     MHLO_Tuple:$operand,
-    I32Attr:$index
+    ConfinedAttr<I32Attr, [IntNonNegative]>:$index
   );
 
   let results = (outs MHLO_TensorOrTokenOrTuple);
@@ -1963,7 +1972,7 @@ def MHLO_BatchNormGradOp : MHLO_Op<"batch_norm_grad", [Pure,
     1DTensorOf<[MHLO_Float]>:$variance,
     MHLO_FpTensor:$grad_output,
     F32Attr:$epsilon,
-    I64Attr:$feature_index
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$feature_index
   );
 
   let results = (outs
@@ -2000,7 +2009,7 @@ def MHLO_BatchNormInferenceOp : MHLO_Op<"batch_norm_inference",
     1DTensorOf<[MHLO_Float]>:$mean,
     1DTensorOf<[MHLO_Float]>:$variance,
     F32Attr:$epsilon,
-    I64Attr:$feature_index
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$feature_index
   );
 
   let results = (outs MHLO_FpTensor:$result);
@@ -2032,7 +2041,7 @@ def MHLO_BatchNormTrainingOp : MHLO_Op<"batch_norm_training",
     1DTensorOf<[MHLO_Float]>:$scale,
     1DTensorOf<[MHLO_Float]>:$offset,
     F32Attr:$epsilon,
-    I64Attr:$feature_index
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$feature_index
   );
 
   let results = (outs
@@ -2113,7 +2122,7 @@ def MHLO_BroadcastInDimOp : MHLO_Op<"broadcast_in_dim",
     MHLO_BroadcastDimAttr:$broadcast_dimensions
   );
 
-  let results = (outs MHLO_StaticShapeTensor);
+  let results = (outs MHLO_StaticShapeOrBoundedDimTensor);
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
@@ -2145,7 +2154,7 @@ def MHLO_DynamicBroadcastInDimOp : MHLO_ShapedInterfaceOp<
     %result = "mhlo.dynamic_broadcast_in_dim"(%operand, %output_dimensions) {
       broadcast_dimensions = array<i64: 2, 1>,
       known_expanding_dimensions = array<i64: 0>,
-      known_non_expanding_dimensions = array<i64: 1>
+      known_nonexpanding_dimensions = array<i64: 1>
     } : (tensor<1x3xi64>, tensor<3xi64>) -> tensor<2x3x2xi64>
     ```
   }];
@@ -2254,7 +2263,7 @@ def MHLO_ConcatenateOp : MHLO_ShapedInterfaceOp<"concatenate",
 
   let arguments = (ins
     Variadic<MHLO_Tensor>:$val,
-    I64Attr:$dimension
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension
   );
 
   let results = (outs MHLO_Tensor);
@@ -2397,11 +2406,24 @@ def MHLO_ConvolutionOp : MHLO_Op<"convolution", [Pure]> {
     } : (tensor<1x4x4x1xi32>, tensor<3x3x1x1xi32>) -> tensor<1x2x2x1xi32>
     ```
   }];
-  let arguments = !con(
-    (ins
-       MHLO_Tensor:$lhs,
-       MHLO_Tensor:$rhs),
-    MHLO_ConvolutionAttributes.attributes);
+  let arguments = (ins
+      MHLO_Tensor:$lhs,
+      MHLO_Tensor:$rhs,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$window_strides,
+      // Default value: two zeros for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$padding,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$lhs_dilation,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$rhs_dilation,
+      // Default value: false for each of the spatial dimension.
+      OptionalAttr<MHLO_BoolElementsAttr>:$window_reversal,
+      MHLO_ConvDimensionNumbers:$dimension_numbers,
+      ConfinedAttr<I64Attr, [IntPositive]>:$feature_group_count,
+      ConfinedAttr<I64Attr, [IntPositive]>:$batch_group_count,
+      OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config
+  );
 
   let results = (outs MHLO_Tensor);
   let hasCanonicalizer = 1;
@@ -2590,7 +2612,7 @@ def MHLO_DotOp: MHLO_Op<"dot", [Pure]> {
   let arguments = (
     ins MHLO_Tensor:$lhs,
     MHLO_Tensor:$rhs,
-    MHLO_PrecisionConfigAttr:$precision_config
+    OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config
   );
   let results = (outs MHLO_Tensor);
   // Dot op required custom exporter to pass the preferred element type
@@ -2625,12 +2647,48 @@ def MHLO_DotGeneralOp: MHLO_ShapedInterfaceOp<"dot_general", [Pure]> {
     MHLO_Tensor:$lhs,
     MHLO_Tensor:$rhs,
     MHLO_DotDimensionNumbers:$dot_dimension_numbers,
-    MHLO_PrecisionConfigAttr:$precision_config
+    OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config,
+    OptionalAttr<MHLO_DotAlgorithmAttr>:$algorithm
   );
 
   let results = (outs MHLO_Tensor);
   // DotGeneral op required custom exporter to pass the preferred element type
   // to Xla builder.
+  let hasCustomHLOConverter = 1;
+  let hasVerifier = 1;
+}
+
+def MHLO_RaggedDotOp: MHLO_Op<"ragged_dot", [Pure]> {
+  let summary = "Ragged matrix multiplication over a single ragged dimension";
+  let description = [{
+    This operation takes three tensor args---lhs, rhs, and group_sizes---and
+    a "ragged_dot_dimension_numbers" attribute. Like dot_general, the lhs and
+    rhs are allowed arbitrary batch and contracting dimensions. Additionally,
+    the lhs is required to have one ragged dimension, and the rhs may have at
+    most one group dimension. The op has three modes, depending on the kind of
+    the lhs ragged dimension.
+
+    In mode 1, the shape-signature is `[b,m,k], [g,b,k,n], [b,g] -> [b,m,n]`.
+    Here the ragged dimension is an lhs non-contracting dimension (`m`). The
+    dimensions `b` and `k` represent batch and contracting dimensions
+    respectively. The rhs is required to have a group dimension (`g`).
+
+    In mode 2, the shape-signature is `[b,m,k], [b,k,n], [b,g] -> [g,b,m,n]`.
+    Here the ragged dimension is an lhs/rhs contracting dimension (`k`).
+
+    In mode 3, the shape-signature is `[b,m,k], [b,k,n], [g] -> [b,m,n]`. Here
+    the ragged dimension is an lhs/rhs batch dimension (`b`).
+  }];
+
+  let arguments = (ins
+    MHLO_Tensor:$lhs,
+    MHLO_Tensor:$rhs,
+    MHLO_Tensor:$group_sizes,
+    MHLO_RaggedDotDimensionNumbers:$ragged_dot_dimension_numbers,
+    OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config
+  );
+
+  let results = (outs HLO_Tensor:$result);
   let hasCustomHLOConverter = 1;
   let hasVerifier = 1;
 }
@@ -2649,7 +2707,7 @@ def MHLO_SparseDotOp: MHLO_Op<"sparse_dot", [Pure]> {
     OptionalAttr<MHLO_SparsityDescriptor>:$lhs_sparsity,
     OptionalAttr<MHLO_SparsityDescriptor>:$rhs_sparsity,
     MHLO_DotDimensionNumbers:$dot_dimension_numbers,
-    MHLO_PrecisionConfigAttr:$precision_config
+    OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config
   );
   let results = (outs MHLO_Tensor);
   // SparseDot op required custom exporter to pass the preferred element type
@@ -2685,37 +2743,6 @@ def MHLO_EinsumOp: MHLO_Op<"einsum", [Pure]> {
 
   // TODO(hinsu): Canonicalize to lower this client side HLO op to server
   // side HLO ops.
-}
-
-def MHLO_UnaryEinsumOp: MHLO_Op<"unary_einsum", [Pure]> {
-  let summary = "UnaryEinsum operation";
-  let description = [{
-    This operation is on its way out of StableHLO, so it is not included in
-    the specification: https://github.com/openxla/stablehlo/issues/3.
-
-    Informally, this operation does the same thing as TF's einsum:
-    https://www.tensorflow.org/api_docs/python/tf/einsum
-
-    Example:
-    ```mlir
-    %result = "mhlo.unary_einsum"(%operand) {
-      einsum_config = "ab->a"
-    } : (tensor<4x16xf32>) -> tensor<4xf32>
-    ```
-  }];
-
-  let arguments = (ins
-    MHLO_Tensor:$operand,
-    StrAttr:$einsum_config
-  );
-
-  let results = (outs MHLO_Tensor);
-
-  let hasCanonicalizer = 1;
-
-  // UnaryEinsumOp is unconditionally canonicalized to the binary EinsumOp so
-  // the HLO converter shouldn't be invoked.
-  let hasCustomHLOConverter = 1;
 }
 
 def MHLO_FftOp: MHLO_Op<"fft", [InferTensorType, Pure]> {
@@ -2795,7 +2822,7 @@ def MHLO_GetDimensionSizeOp: MHLO_Op<"get_dimension_size",
   }];
   let arguments = (ins
     MHLO_Tensor:$operand,
-    I64Attr:$dimension
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension
   );
   // TODO(hinsu): Allow 64-bit result types once XLA HLO dialect based on the
   // XLA semantics is available. This limitation is because of the current XLA
@@ -2854,7 +2881,7 @@ def MHLO_ReshapeOp: MHLO_Op<"reshape",
 
   let arguments = (ins MHLO_AnyTensor:$operand);
 
-  let results = (outs MHLO_StaticShapeTensor);
+  let results = (outs MHLO_StaticShapeOrBoundedDimTensor);
   let hasFolder = 1;
   let hasCanonicalizer = 1;
   let hasVerifier = 1;
@@ -3040,7 +3067,7 @@ def MHLO_SetDimensionSizeOp: MHLO_Op<"set_dimension_size", [Pure,
   let arguments = (ins
     MHLO_Tensor:$operand,
     I32Tensor:$size,
-    I64Attr:$dimension
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension
   );
   let results = (outs MHLO_Tensor);
 
@@ -3597,6 +3624,7 @@ def MHLO_UniformQuantizeOp : MHLO_UnaryElementwiseOp<"uniform_quantize",
   // Currently, it doesn't have an XLA builder equivalent.
   // TODO(b/230671877): Implement XLA import/export for quantized MHLO ops.
   let hasCustomHLOConverter = 1;
+  let hasVerifier = 1;
 }
 
 def MHLO_UniformDequantizeOp : MHLO_UnaryElementwiseOp<"uniform_dequantize",
@@ -3699,10 +3727,9 @@ def MHLO_ReducePrecisionOp : MHLO_Op<"reduce_precision",
   }];
   let arguments = (ins
     MHLO_FpTensor:$operand,
-    I32Attr:$exponent_bits,
-    I32Attr:$mantissa_bits
+    ConfinedAttr<I32Attr, [IntPositive]>:$exponent_bits,
+    ConfinedAttr<I32Attr, [IntNonNegative]>:$mantissa_bits
   );
-  let hasVerifier = 1;
   let results = (outs MHLO_FpTensor:$output);
 
   let assemblyFormat = [{
@@ -3846,12 +3873,25 @@ def MHLO_DynamicConvOp : MHLO_Op<"dynamic_conv", [Pure]> {
     ```
   }];
 
-  let arguments = !con(
-    (ins
-       MHLO_Tensor:$lhs,
-       MHLO_Tensor:$rhs,
-       MHLO_Tensor:$d_padding),
-    MHLO_ConvolutionAttributes.attributes);
+  let arguments = (ins
+      MHLO_Tensor:$lhs,
+      MHLO_Tensor:$rhs,
+      MHLO_Tensor:$d_padding,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$window_strides,
+      // Default value: two zeros for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$padding,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$lhs_dilation,
+      // Default value: one for each of the spatial dimension.
+      OptionalAttr<I64ElementsAttr>:$rhs_dilation,
+      // Default value: false for each of the spatial dimension.
+      OptionalAttr<MHLO_BoolElementsAttr>:$window_reversal,
+      MHLO_ConvDimensionNumbers:$dimension_numbers,
+      ConfinedAttr<I64Attr, [IntPositive]>:$feature_group_count,
+      ConfinedAttr<I64Attr, [IntPositive]>:$batch_group_count,
+      OptionalAttr<MHLO_PrecisionConfigAttr>:$precision_config
+  );
   let results = (outs MHLO_Tensor);
   let hasCanonicalizer = 1;
   let hasCustomHLOConverter = 1;

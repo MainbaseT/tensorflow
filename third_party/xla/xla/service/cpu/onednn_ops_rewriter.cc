@@ -20,6 +20,7 @@ limitations under the License.
 #include "xla/literal_comparison.h"
 #include "xla/literal_util.h"
 #include "xla/service/cpu/backend_config.pb.h"
+#include "xla/service/cpu/onednn_config.pb.h"
 #include "xla/service/cpu/onednn_memory_util.h"
 #include "xla/service/cpu/onednn_pattern_utils.h"
 #include "xla/service/cpu/onednn_util.h"
@@ -499,9 +500,9 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
             src_shape, {src, scale_operand, bias_operand},
             "__onednn$layernorm"));
     BackendConfig backend_config;
-    OneDnnLayerNormConfig* ln_config =
+    OneDnnNormConfig* ln_config =
         backend_config.mutable_onednn_layer_norm_config();
-    ln_config->set_fused_ops(OneDnnLayerNormConfig::SCALE_AND_SHIFT);
+    ln_config->set_rescale(OneDnnNormConfig::SCALE_AND_SHIFT);
     ln_config->set_epsilon_typecast(*(reinterpret_cast<int32_t*>(&eps)));
     TF_RETURN_IF_ERROR(ln_call->set_backend_config(backend_config));
 
@@ -575,8 +576,12 @@ class OneDnnOpsRewriterVisitor : public DfsHloRewriteVisitor {
 absl::StatusOr<bool> OneDnnOpsRewriter::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
+  XLA_VLOG_LINES(3, "OneDnnOpsRewriter::Run(), before:\n" + module->ToString());
   OneDnnOpsRewriterVisitor visitor;
-  return visitor.RunOnModule(module, execution_threads);
+  TF_ASSIGN_OR_RETURN(auto result,
+                      visitor.RunOnModule(module, execution_threads));
+  XLA_VLOG_LINES(3, "OneDnnOpsRewriter::Run(), after:\n" + module->ToString());
+  return result;
 }
 
 }  // namespace cpu

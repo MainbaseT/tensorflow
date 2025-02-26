@@ -21,6 +21,7 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
@@ -28,8 +29,8 @@ limitations under the License.
 #include "xla/primitive_util.h"
 #include "xla/printer.h"
 #include "xla/shape.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/logging.h"  // IWYU pragma: keep
 
 namespace xla {
 
@@ -99,6 +100,14 @@ Layout::Layout(absl::Span<const int64_t> minor_to_major)
     : index_primitive_type_(PRIMITIVE_TYPE_INVALID),
       pointer_primitive_type_(PRIMITIVE_TYPE_INVALID),
       minor_to_major_(minor_to_major.begin(), minor_to_major.end()) {}
+
+Layout::Layout(absl::Span<const int64_t> minor_to_major,
+               absl::Span<const Tile> tiles, int64_t element_size_in_bits)
+    : index_primitive_type_(PRIMITIVE_TYPE_INVALID),
+      pointer_primitive_type_(PRIMITIVE_TYPE_INVALID),
+      element_size_in_bits_(element_size_in_bits),
+      minor_to_major_(minor_to_major.begin(), minor_to_major.end()),
+      tiles_(tiles.begin(), tiles.end()) {}
 
 Layout::Layout(absl::Span<const int64_t> minor_to_major,
                absl::Span<const DimLevelType> dim_level_types,

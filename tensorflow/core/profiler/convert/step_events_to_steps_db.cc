@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/log.h"
+#include "xla/tsl/profiler/utils/timespan.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
@@ -31,7 +32,6 @@ limitations under the License.
 #include "tensorflow/core/profiler/protobuf/steps_db.pb.h"
 #include "tensorflow/core/profiler/utils/event_span.h"
 #include "tensorflow/core/profiler/utils/op_metrics_db_utils.h"
-#include "tsl/profiler/utils/timespan.h"
 
 namespace tensorflow {
 namespace profiler {
@@ -73,6 +73,11 @@ void StepEventsToPerCoreStepInfo(uint32_t step_num, StepDetails& step_details,
     step_info.mutable_step_breakdown()->PackFrom(step_breakdown);
     (*per_core_step_info.mutable_step_info_per_core())[core_id] =
         std::move(step_info);
+  }
+  auto& all_reduce_db_per_core_map =
+      *per_core_step_info.mutable_all_reduce_db_per_core();
+  for (const auto& [core_id, all_reduce_db] : step_details.Collectives()) {
+    all_reduce_db_per_core_map[core_id].CopyFrom(all_reduce_db);
   }
 }
 

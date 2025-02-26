@@ -612,7 +612,7 @@ class ScalarPointwiseToStandardConverter : public OpConversionPattern<MhloOp> {
     auto rhs = rewriter.create<memref::LoadOp>(loc, mhloOp.rhs());
     Value opResult = mhlo::MhloOpToStdScalarOp::mapOp(
         mhloOp, argType.getElementType(), llvm::ArrayRef<Value>{lhs, rhs},
-        &rewriter);
+        /*attributes=*/std::nullopt, &rewriter);
     rewriter.create<memref::StoreOp>(loc, opResult, mhloOp.out());
     rewriter.eraseOp(mhloOp);
     return success();
@@ -1512,7 +1512,7 @@ class IotaConverter : public OpConversionPattern<OpTy> {
               indexOp);
           castOp = mhlo::MhloOpToStdScalarOp::mapConvertOpToStdScalarOp(
               nestedLoc, targetElementType, resultElementType, castOp.getType(),
-              {castOp}, &nestedBuilder);
+              {castOp}, /*attributes=*/std::nullopt, &nestedBuilder);
           nestedBuilder.create<linalg::YieldOp>(nestedLoc, castOp);
         },
         linalg::getPrunedAttributeList(iotaOp));
@@ -1548,7 +1548,8 @@ class IotaToMapConverter : public OpConversionPattern<OpTy> {
               nestedLoc, nestedBuilder.getI64Type(), index);
           Value result = mhlo::MhloOpToStdScalarOp::mapConvertOpToStdScalarOp(
               nestedLoc, targetElementType, resultTy.getElementType(),
-              index.getType(), {ValueRange{index}}, &nestedBuilder);
+              index.getType(), {ValueRange{index}}, /*attributes=*/std::nullopt,
+              &nestedBuilder);
           nestedBuilder.create<linalg::YieldOp>(nestedLoc, ValueRange{result});
         },
         linalg::getPrunedAttributeList(iotaOp));
@@ -2030,7 +2031,7 @@ class MapOpToGenericConverter : public OpConversionPattern<mhlo::MapOp> {
     }
     signatureConverter.addInputs(resultType.getElementType());
 
-    rewriter.applySignatureConversion(&region, signatureConverter,
+    rewriter.applySignatureConversion(&region.front(), signatureConverter,
                                       getTypeConverter());
     rewriter.replaceOp(op, linalgOp.getResults());
     return success();
@@ -2079,7 +2080,7 @@ class MapOpToMapConverter : public OpConversionPattern<mhlo::MapOp> {
               mlir::cast<ShapedType>(it.value().getType()).getElementType()));
     }
 
-    rewriter.applySignatureConversion(&region, signatureConverter,
+    rewriter.applySignatureConversion(&region.front(), signatureConverter,
                                       getTypeConverter());
     auto result = rewriter.createOrFold<tensor::CastOp>(loc, resultType,
                                                         linalgOp.getResults());
@@ -2222,7 +2223,7 @@ class ReduceOpToGenericConverter : public OpConversionPattern<mhlo::ReduceOp> {
               mlir::cast<ShapedType>(val.getType()).getElementType()));
     }
 
-    rewriter.applySignatureConversion(&region, signatureConverter,
+    rewriter.applySignatureConversion(&region.front(), signatureConverter,
                                       getTypeConverter());
     rewriter.replaceOp(op, linalgOp.getResults());
     return success();
@@ -2317,7 +2318,7 @@ struct ReduceOpToReduceConverter : public OpConversionPattern<mhlo::ReduceOp> {
           // type for new operand number 'idx' + linalgOp.getNumInputs()
           typeConverter->convertType(val.getElementType()));
     }
-    rewriter.applySignatureConversion(&region, signatureConverter,
+    rewriter.applySignatureConversion(&region.front(), signatureConverter,
                                       getTypeConverter());
 
     // Cast the result to the correct type.
@@ -2520,8 +2521,8 @@ struct SelectAndScatterNoOverlapConverter
     reduceSignConverter.addInputs(srcETy);
     reduceSignConverter.addInputs(1, destETy);
     reduceSignConverter.addInputs(indexETy);
-    rewriter.applySignatureConversion(&reduceRegion, reduceSignConverter,
-                                      getTypeConverter());
+    rewriter.applySignatureConversion(&reduceRegion.front(),
+                                      reduceSignConverter, getTypeConverter());
 
     // Grab the terminator and use the turned value to now select the
     // correct index and value.
@@ -2628,8 +2629,8 @@ struct SelectAndScatterNoOverlapConverter
     scatterSignConverter.addInputs(indexETy);
     scatterSignConverter.addInputs(0, sourceTy.getElementType());
     scatterSignConverter.addInputs(1, sourceTy.getElementType());
-    rewriter.applySignatureConversion(&scatterRegion, scatterSignConverter,
-                                      getTypeConverter());
+    rewriter.applySignatureConversion(&scatterRegion.front(),
+                                      scatterSignConverter, getTypeConverter());
 
     auto& scatterBlock = scatterRegion.front();
     auto scatterTerminator = scatterBlock.getTerminator();
@@ -3678,7 +3679,7 @@ struct ReduceWindowOpOnTensorsGenericConversion
           i, mlir::cast<ShapedType>(input.getType()).getElementType());
     }
 
-    rewriter.applySignatureConversion(&region, signatureConverter,
+    rewriter.applySignatureConversion(&region.front(), signatureConverter,
                                       getTypeConverter());
     rewriter.replaceOp(op, linalgOp.getResults());
     return success();
@@ -4369,7 +4370,8 @@ class PointwiseToLinalgMapConverter : public OpConversionPattern<OpTy> {
         [&](OpBuilder& b, Location loc, ValueRange args) {
           Value innerResult = mhlo::MhloOpToStdScalarOp::mapOp(
               op, getElementTypeOrSelf(emptyTensor),
-              interleaveScalarAndBlockArgs(scalarInputs, args), &b);
+              interleaveScalarAndBlockArgs(scalarInputs, args),
+              /*attributes=*/std::nullopt, &b);
           b.create<linalg::YieldOp>(loc, innerResult);
         },
         linalg::getPrunedAttributeList(op));

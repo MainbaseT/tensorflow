@@ -53,6 +53,32 @@ def MHLO_GatherDimensionNumbers : AttrDef<MHLO_Dialect, "GatherDimensionNumbers"
   let hasCustomAssemblyFormat = 1;
 }
 
+def MHLO_DotAlgorithmAttr : AttrDef<MHLO_Dialect, "DotAlgorithm"> {
+  let mnemonic = "dot_algorithm";
+  let summary = "Attribute that models the algorithm constraints to use for computing dot.";
+  let parameters = (ins
+      "Type":$lhsPrecisionType,
+      "Type":$rhsPrecisionType,
+      "Type":$accumulationType,
+      "int64_t":$lhsComponentCount,
+      "int64_t":$rhsComponentCount,
+      "int64_t":$numPrimitiveOperations,
+      "bool":$allowImpreciseAccumulation
+  );
+  let assemblyFormat = [{
+    `<`
+      `lhs_precision_type` `=` $lhsPrecisionType `,`
+      `rhs_precision_type` `=` $rhsPrecisionType `,`
+      `accumulation_type` `=` $accumulationType `,`
+      `lhs_component_count` `=` $lhsComponentCount `,`
+      `rhs_component_count` `=` $rhsComponentCount `,`
+      `num_primitive_operations` `=` $numPrimitiveOperations `,`
+      `allow_imprecise_accumulation` `=` $allowImpreciseAccumulation
+    `>`
+  }];
+  let genVerifyDecl = 1;
+}
+
 def MHLO_DotDimensionNumbers : AttrDef<MHLO_Dialect, "DotDimensionNumbers"> {
   let mnemonic = "dot";
   let summary = "Attribute that models the dimension information for dot.";
@@ -280,6 +306,17 @@ def MHLO_SparsityDescriptor : AttrDef<MHLO_Dialect, "SparsityDescriptor"> {
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
+def MHLO_RaggedDotDimensionNumbers : AttrDef<MHLO_Dialect, "RaggedDotDimensionNumbers"> {
+  let mnemonic = "ragged_dot";
+  let summary = "Attribute that models the dimension information for ragged dot.";
+  let parameters = (ins
+      MHLO_DotDimensionNumbers:$dotDimensionNumbers,
+      MHLO_Dims:$lhsRaggedDimensions,
+      MHLO_Dims:$rhsGroupDimensions
+  );
+  let hasCustomAssemblyFormat = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Common convolution attributes
 //===----------------------------------------------------------------------===//
@@ -295,23 +332,36 @@ def MHLO_BoolElementsAttr :
   let convertFromStorage = "$_self";
 }
 
-def MHLO_ConvolutionAttributes {
-  dag attributes = (ins
-    // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$window_strides,
-    // Default value: two zeros for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$padding,
-    // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$lhs_dilation,
-    // Default value: one for each of the spatial dimension.
-    OptionalAttr<I64ElementsAttr>:$rhs_dilation,
-    // Default value: false for each of the spatial dimension.
-    OptionalAttr<MHLO_BoolElementsAttr>:$window_reversal,
-    MHLO_ConvDimensionNumbers:$dimension_numbers,
-    I64Attr:$feature_group_count,
-    I64Attr:$batch_group_count,
-    MHLO_PrecisionConfigAttr:$precision_config
+//==----------------------------------------------------------------------===//
+// Result Accuracy attributes
+//===----------------------------------------------------------------------===//
+
+def MHLO_APFloatV1 : APFloatParameter<""> {
+  let parser = [{
+    [&]() -> FailureOr<llvm::APFloat> {
+      double value;
+      if (failed($_parser.parseFloat(value))) {
+        return failure();
+      }
+      return APFloat(value);
+    }()
+  }];
+  let printer = "$_printer.printFloat($_self);";
+}
+
+def MHLO_ResultAccuracyAttr : AttrDef<MHLO_Dialect, "ResultAccuracy"> {
+  let mnemonic = "result_accuracy";
+  let summary = "The requested accuracy for unary ops.";
+  let parameters = (ins
+      "APFloat":$atol,
+      "APFloat":$rtol,
+      "int64_t":$ulps,
+      MHLO_ResultAccuracyModeAttr:$mode
+
   );
+  let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
+  let constBuilderCall = "mlir::mhlo::ResultAccuracyAttr::get($_builder.getContext(), llvm::APFloat(0.0), llvm::APFloat(0.0), 0, mlir::mhlo::ResultAccuracyModeAttr::get($_builder.getContext(), $0))";
 }
 
 #endif // MLIR_HLO_DIALECT_MHLO_IR_HLO_OPS_ATTRS
